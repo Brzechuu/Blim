@@ -31,6 +31,9 @@ class TokenType(Enum):
     PLUS = auto()  # +
     MINUS = auto()  # -
     STAR = auto()  # *
+    BANG_AMPERSAND = auto()  # !&
+    BANG_PIPE = auto()  # !|
+    BANG_CARET = auto()  # !^
     AMPERSAND = auto()  # &
     PIPE = auto()  # |
     CARET = auto()  # ^
@@ -107,6 +110,9 @@ class Lexer:
             ("PLUS", r"\+"),
             ("MINUS", r"-"),
             ("STAR", r"\*"),
+            ("BANG_AMPERSAND", r"!&"),
+            ("BANG_PIPE", r"!\|"),
+            ("BANG_CARET", r"!\^"),
             ("AMPERSAND", r"&"),
             ("PIPE", r"\|"),
             ("CARET", r"\^"),
