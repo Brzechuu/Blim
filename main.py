@@ -3,8 +3,7 @@ import sys
 from pathlib import Path
 
 from blim_lexer import Lexer, TokenType
-
-# from blim_parser import Parser
+from blim_parser import Parser
 
 
 def find_src_files(directory: Path):
@@ -72,7 +71,9 @@ def main():
                 )
                 sys.exit(1)
 
-        # ast = Parser(tokens, path).parse()
+        ast = Parser(tokens, path, project_path).parse()
+        if args.debug:
+            print(ast)
 
 
 if __name__ == "__main__":
