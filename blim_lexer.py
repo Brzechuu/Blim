@@ -11,6 +11,8 @@ class TokenType(Enum):
     FUN = auto()
     RETURN = auto()
     WHILE = auto()
+    BREAK = auto()
+    CONTINUE = auto()
     IF = auto()
     ELSE = auto()
     TYPE = auto()
@@ -81,6 +83,8 @@ class Lexer:
             "fun": TokenType.FUN,
             "return": TokenType.RETURN,
             "while": TokenType.WHILE,
+            "break": TokenType.BREAK,
+            "continue": TokenType.CONTINUE,
             "if": TokenType.IF,
             "else": TokenType.ELSE,
             "u16": TokenType.TYPE,
