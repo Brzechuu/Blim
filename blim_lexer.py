@@ -90,7 +90,7 @@ class Lexer:
             "u16": TokenType.TYPE,
             "i16": TokenType.TYPE,
             "u8": TokenType.TYPE,
-            "i8": TokenType.TYPE,
+            # "i8": TokenType.TYPE,
         }
 
         rules = [

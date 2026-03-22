@@ -9,7 +9,7 @@ from blim_lexer import Token, TokenType
 class IntType(Enum):
     U8 = auto()
     U16 = auto()
-    I8 = auto()
+    # I8 = auto()
     I16 = auto()
 
 
