@@ -1,11 +1,12 @@
 #!/bin/python
 import argparse
-import sys
 from pathlib import Path
 
-from blim_codegen import Codegen
+from blim_codegen import CodeGenerator
 from blim_lexer import Lexer, TokenType
 from blim_parser import FileAst, Parser
+from blim_reporter import Reporter
+from blim_semanalyzer import SemanticAnalyzer
 
 
 def find_src_files(directory: Path):
@@ -21,6 +22,7 @@ def find_src_files(directory: Path):
 
 
 def main():
+    r = Reporter()
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("path", type=str, help="Project path")
     arg_parser.add_argument(
@@ -32,12 +34,12 @@ def main():
     project_path = Path(args.path).resolve()
 
     if not project_path.exists():
-        print(f"Error: Path '{project_path}' does not exist.")
-        sys.exit(1)
+        r.error(f"Path '{project_path}' does not exist.")
+        raise SystemExit(1)
 
     if not project_path.is_dir():
-        print(f"Error: Path '{project_path}' is not a directory.")
-        sys.exit(1)
+        r.error(f"Path '{project_path}' is not a directory.")
+        raise SystemExit(1)
 
     print("Blim compiler 0.2")
     print(f"Building project: {project_path.name}")
@@ -46,31 +48,38 @@ def main():
     ast: dict[str, list[FileAst]] = {}
 
     if not src_files:
-        print("Error: Blim files not found.")
-        sys.exit(1)
+        r.error("Blim files not found.")
+        raise SystemExit(1)
 
     for path in src_files:
         try:
             with open(path, "r", encoding="utf-8") as file:
                 code = file.read()
         except Exception as e:
-            print("Error:", e)
+            r.warn(f"{e}")
             continue
 
         tokens = list(Lexer(code).tokenize())
 
         for token in tokens:
             if token.type == TokenType.ILLEGAL:
-                print(
-                    f"Error: Illegal token '{token.value}' in {path.relative_to(project_path)}:{token.line}:{token.column}"
+                r.error(
+                    f"Illegal token '{token.value}' in {path.relative_to(project_path)}:{token.line}:{token.column}"
                 )
-                sys.exit(1)
 
-        file_ast = Parser(tokens, path, project_path).parse()
+        if r.error_counter:
+            raise SystemExit(1)
+
+        file_ast = Parser(tokens, path, project_path, r).parse()
 
         if file_ast.package not in ast:
             ast[file_ast.package] = []
         ast[file_ast.package].append(file_ast)
+
+        SemanticAnalyzer(ast, r).analyze()
+
+        if r.error_counter:
+            raise SystemExit(1)
 
     if args.debug:
         for package, files_ast in ast.items():
@@ -98,7 +107,10 @@ def main():
                     for item in file_ast.functions:
                         print(f"    - {item.name}")
 
-    asm_code = Codegen(ast).generate_asm()
+    asm_code = CodeGenerator(ast, r).generate_asm_code()
+
+    if r.error_counter:
+        raise SystemExit(1)
 
     output_file = project_path / f"{project_path.name}.asm"
     try:
@@ -106,8 +118,8 @@ def main():
             f.write(asm_code)
         print(f"File saved to '{output_file}'")
     except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        r.error(f"{e}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

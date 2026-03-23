@@ -1,9 +1,9 @@
-import sys
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 
 from blim_lexer import Token, TokenType
+from blim_reporter import Reporter
 
 
 class IntType(Enum):
@@ -114,7 +114,7 @@ class Assign(Statement):
 
 @dataclass
 class Return(Statement):
-    values: list[Expression] = field(default_factory=list)
+    pass
 
 
 @dataclass
@@ -189,9 +189,9 @@ class Result(Node):
 @dataclass
 class Function(Node):
     name: str
+    body: Block
     params: list[Param] = field(default_factory=list)
     results: list[Result] = field(default_factory=list)
-    body: Block | None = None
 
 
 @dataclass
@@ -213,12 +213,14 @@ class FileAst(Node):
 
 
 class Parser:
-    def __init__(self, tokens: list[Token], path: Path, project_path: Path):
+    def __init__(
+        self, tokens: list[Token], path: Path, project_path: Path, reporter: Reporter
+    ):
         self.tokens = tokens
         self.pos = 0
         self.path = path
         self.project_path = project_path
-        self.current_function_results: list[Result] = []
+        self.r = reporter
 
         self.PRECEDENCE = {
             TokenType.PIPE: 1,
@@ -263,10 +265,10 @@ class Parser:
             self.pos += 1
             return token
 
-        print(
-            f"Error: Expected {expected_type.name}, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+        self.r.error(
+            f"Expected {expected_type.name}, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
         )
-        sys.exit(1)
+        raise SystemExit(1)
 
     def skip_newlines(self):
         while self.get_token().type == TokenType.NEW_LINE:
@@ -304,10 +306,10 @@ class Parser:
             )
 
         else:
-            print(
-                f"Error: Expected expression, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+            self.r.error(
+                f"Expected EXPRESSION, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
             )
-            sys.exit(1)
+            raise SystemExit(1)
 
         self.skip_newlines()
 
@@ -369,10 +371,9 @@ class Parser:
         self.skip_newlines()
         while not self.match(TokenType.RIGHT_BRACE):
             if self.get_token().type == TokenType.EOF:
-                print(
-                    f"Error: Unclosed '{{' in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                self.r.error(
+                    f"Unclosed '{{' in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                 )
-                sys.exit(1)
             statements.append(self.parse_statement())
             self.skip_newlines()
         return Block(line=token.line, column=token.column, statements=statements)
@@ -382,24 +383,7 @@ class Parser:
         token = self.get_token()
 
         if self.match(TokenType.RETURN):
-            next_t = self.get_token()
-            values: list[Expression] = []
-
-            if next_t.type in (
-                TokenType.NEW_LINE,
-                TokenType.RIGHT_BRACE,
-                TokenType.EOF,
-            ):
-                for res in self.current_function_results:
-                    values.append(
-                        Name(line=token.line, column=token.column, value=res.name)
-                    )
-            else:
-                while True:
-                    values.append(self.parse_expression())
-                    if not self.match(TokenType.COMMA):
-                        break
-            return Return(line=token.line, column=token.column, values=values)
+            return Return(line=token.line, column=token.column)
 
         if self.match(TokenType.WHILE):
             self.expect(TokenType.LEFT_BRACKET)
@@ -450,10 +434,9 @@ class Parser:
             lines = []
             while not self.match(TokenType.RIGHT_BRACE):
                 if self.get_token().type == TokenType.EOF:
-                    print(
-                        f"Error: Unclosed #asm block in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                    self.r.error(
+                        f"Unclosed #asm block in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                     )
-                    sys.exit(1)
 
                 asm_line = []
                 while self.get_token().type not in [
@@ -531,10 +514,10 @@ class Parser:
             self.pos += 1
             base_type = token.value
         else:
-            print(
-                f"Error: Expected type, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+            self.r.error(
+                f"Expected TYPE, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
             )
-            sys.exit(1)
+            raise SystemExit(1)
 
         array_size = None
         if self.match(TokenType.LEFT_SQUARE_BRACKET):
@@ -593,15 +576,13 @@ class Parser:
                 ]:
                     ast.global_variables.append(self.parse_global_var(token))
                 else:
-                    print(
-                        f"Error: Expected 'struct', 'fun' or type, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                    self.r.error(
+                        f"Expected 'struct', 'fun' or type, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                     )
-                    sys.exit(1)
             else:
-                print(
-                    f"Error: Unexpected token {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                self.r.error(
+                    f"Unexpected token {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                 )
-                sys.exit(1)
 
         return ast
 
@@ -703,13 +684,8 @@ class Parser:
                 if not self.match(TokenType.COMMA):
                     break
 
-        previous_results = self.current_function_results
-        self.current_function_results = results
-
         self.skip_newlines()
         body = self.parse_block()
-
-        self.current_function_results = previous_results
 
         return Function(
             line=name_token.line,
