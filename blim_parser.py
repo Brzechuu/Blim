@@ -436,13 +436,13 @@ class Parser:
         if self.match(TokenType.CONTINUE):
             return Continue(line=token.line, column=token.column)
 
-        if self.match(TokenType.HASH_ASM):
+        if self.match(TokenType.ASM):
             self.expect(TokenType.LEFT_BRACE)
             lines = []
             while not self.match(TokenType.RIGHT_BRACE):
                 if self.get_token().type == TokenType.EOF:
                     self.r.error(
-                        f"Unclosed #asm block in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                        f"Unclosed asm block in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                     )
 
                 asm_line = []

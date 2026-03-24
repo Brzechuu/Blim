@@ -7,6 +7,7 @@ class TokenType(Enum):
     PACKAGE = auto()
     USE = auto()
     AS = auto()
+    ASM = auto()
     STRUCT = auto()
     FUN = auto()
     RETURN = auto()
@@ -18,7 +19,6 @@ class TokenType(Enum):
     TYPE = auto()
 
     HASH_DEF = auto()
-    HASH_ASM = auto()
 
     IDENTIFIER = auto()
     NUMBER = auto()
@@ -79,6 +79,7 @@ class Lexer:
             "package": TokenType.PACKAGE,
             "use": TokenType.USE,
             "as": TokenType.AS,
+            "asm": TokenType.ASM,
             "struct": TokenType.STRUCT,
             "fun": TokenType.FUN,
             "return": TokenType.RETURN,
@@ -98,7 +99,6 @@ class Lexer:
             ("WHITESPACE", r"[ \t\r]+"),
             ("NEW_LINE", r"\n"),
             ("HASH_DEF", r"#def"),
-            ("HASH_ASM", r"#asm"),
             ("NUMBER", r"0[xX][0-9a-fA-F]+|0[bB][01]+|\d+"),
             ("IDENTIFIER", r"[a-zA-Z_][a-zA-Z0-9_]*"),
             ("EQUAL", r"=="),
