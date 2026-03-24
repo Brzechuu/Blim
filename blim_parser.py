@@ -359,7 +359,7 @@ class Parser:
                 self.pos += 1
                 operator_str = infix_token.value
                 current_prec = self.PRECEDENCE.get(infix_token.type, 0)
-                right = self.parse_expression(current_prec)
+                right = self.parse_expression(current_prec + 1)
                 left = Operation2(
                     line=left.line,
                     column=left.column,
