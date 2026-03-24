@@ -8,7 +8,6 @@ from blim_parser import (
     Break,
     Call,
     Continue,
-    Define,
     Expression,
     ExprStatement,
     FileAst,
@@ -37,7 +36,6 @@ class PackageEnv:
     variables: dict[str, GlobalVariable]
     functions: dict[str, Function]
     structs: dict[str, Struct]
-    defines: dict[str, Define]
 
 
 class SemanticAnalyzer:
@@ -74,7 +72,7 @@ class SemanticAnalyzer:
             for global_var in file_ast.global_variables:
                 if global_var.name in global_vars:
                     self.r.error(
-                        f"Duplicate global variable or define '{global_var.name}' in package '{package_name}' at {file_ast.path.name}:{global_var.line}:{global_var.column}"
+                        f"Duplicate global variable '{global_var.name}' in package '{package_name}' at {file_ast.path.name}:{global_var.line}:{global_var.column}"
                     )
                 if global_var.name in packages_alias:
                     if isinstance(global_var.type.base_type, str):
@@ -82,13 +80,6 @@ class SemanticAnalyzer:
                             f"Global variable '{global_var.name}' conflicts with used package or its alias at {file_ast.path.name}:{global_var.line}:{global_var.column}"
                         )
                 global_vars.add(global_var.name)
-
-            for define in file_ast.defines:
-                if define.name in global_vars:
-                    self.r.error(
-                        f"Duplicate global variable or define '{define.name}' in package '{package_name}' at {file_ast.path.name}:{define.line}:{define.column}"
-                    )
-                global_vars.add(define.name)
 
             for function in file_ast.functions:
                 if function.name in functions:
@@ -106,7 +97,7 @@ class SemanticAnalyzer:
 
     def build_environments(self):
         for pkg_name, files_ast in self.project_ast.items():
-            env = PackageEnv(variables={}, functions={}, structs={}, defines={})
+            env = PackageEnv(variables={}, functions={}, structs={})
 
             for file_ast in files_ast:
                 for func in file_ast.functions:
@@ -115,8 +106,6 @@ class SemanticAnalyzer:
                     env.variables[gvar.name] = gvar
                 for struct in file_ast.structures:
                     env.structs[struct.name] = struct
-                for define in file_ast.defines:
-                    env.defines[define.name] = define
 
             self.packages_env[pkg_name] = env
 

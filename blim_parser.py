@@ -164,12 +164,6 @@ class Use(Node):
 
 
 @dataclass
-class Define(Node):
-    name: str
-    value: Expression
-
-
-@dataclass
 class Field(Node):
     name: str
     type: Type
@@ -213,7 +207,6 @@ class FileAst(Node):
     path: Path
     package: str
     imports: list[Use] = field(default_factory=list)
-    defines: list[Define] = field(default_factory=list)
     structures: list[Struct] = field(default_factory=list)
     global_variables: list[GlobalVariable] = field(default_factory=list)
     functions: list[Function] = field(default_factory=list)
@@ -565,8 +558,6 @@ class Parser:
 
             if token.type == TokenType.USE:
                 ast.imports.append(self.parse_use())
-            elif token.type == TokenType.HASH_DEF:
-                ast.defines.append(self.parse_define())
             elif token.type == TokenType.IDENTIFIER:
                 self.pos += 1
                 self.expect(TokenType.COLON)
@@ -601,12 +592,6 @@ class Parser:
         if self.match(TokenType.AS):
             alias = self.expect(TokenType.IDENTIFIER).value
         return Use(line=line_tok.line, column=line_tok.column, package=pkg, alias=alias)
-
-    def parse_define(self) -> Define:
-        line_tok = self.expect(TokenType.HASH_DEF)
-        name = self.expect(TokenType.IDENTIFIER).value
-        val = self.parse_expression()
-        return Define(line=line_tok.line, column=line_tok.column, name=name, value=val)
 
     def parse_struct(self, name_token: Token) -> Struct:
         self.expect(TokenType.LEFT_BRACE)
