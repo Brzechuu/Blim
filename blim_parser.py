@@ -13,6 +13,12 @@ class IntType(Enum):
     I16 = auto()
 
 
+class MemberAccessType(Enum):
+    UNKNOWN = auto()
+    PACKAGE = auto()
+    FIELD = auto()
+
+
 @dataclass
 class Node:
     line: int
@@ -69,6 +75,7 @@ class Call(Expression):
 class MemberAccess(Expression):
     value: Expression
     member: str
+    type: MemberAccessType = MemberAccessType.UNKNOWN
 
 
 @dataclass
@@ -583,6 +590,7 @@ class Parser:
                 self.r.error(
                     f"Unexpected token {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
                 )
+                self.pos += 1
 
         return ast
 

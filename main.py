@@ -76,10 +76,10 @@ def main():
             ast[file_ast.package] = []
         ast[file_ast.package].append(file_ast)
 
-        SemanticAnalyzer(ast, r).analyze()
+    SemanticAnalyzer(ast, r).analyze()
 
-        if r.error_counter:
-            raise SystemExit(1)
+    if r.error_counter:
+        raise SystemExit(1)
 
     if args.debug:
         for package, files_ast in ast.items():
