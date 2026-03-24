@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from blim_parser import (
     ArrayValue,
     Asm,
@@ -6,10 +8,12 @@ from blim_parser import (
     Break,
     Call,
     Continue,
+    Define,
     Expression,
     ExprStatement,
     FileAst,
     Function,
+    GlobalVariable,
     If,
     Index,
     MemberAccess,
@@ -20,6 +24,7 @@ from blim_parser import (
     Operation2,
     Return,
     Statement,
+    Struct,
     StructValue,
     Variable,
     While,
@@ -27,10 +32,19 @@ from blim_parser import (
 from blim_reporter import Reporter
 
 
+@dataclass
+class PackageEnv:
+    variables: dict[str, GlobalVariable]
+    functions: dict[str, Function]
+    structs: dict[str, Struct]
+    defines: dict[str, Define]
+
+
 class SemanticAnalyzer:
     def __init__(self, project_ast: dict[str, list[FileAst]], reporter: Reporter):
         self.project_ast = project_ast
         self.r = reporter
+        self.packages_env: dict[str, PackageEnv] = {}
 
     def check_duplication(self, package_name: str, files_ast: list[FileAst]):
         global_vars: set[str] = set()
@@ -90,81 +104,89 @@ class SemanticAnalyzer:
                     )
                 structs.add(struct.name)
 
+    def build_environments(self):
+        for pkg_name, files_ast in self.project_ast.items():
+            env = PackageEnv(variables={}, functions={}, structs={}, defines={})
+
+            for file_ast in files_ast:
+                for func in file_ast.functions:
+                    env.functions[func.name] = func
+                for gvar in file_ast.global_variables:
+                    env.variables[gvar.name] = gvar
+                for struct in file_ast.structures:
+                    env.structs[struct.name] = struct
+                for define in file_ast.defines:
+                    env.defines[define.name] = define
+
+            self.packages_env[pkg_name] = env
+
     def analyze_package(self, package_name: str, files_ast: list[FileAst]):
-        global_vars: set[str] = set()
-        functions: set[str] = set()
-        for file_ast in files_ast:
-            for global_var in file_ast.global_variables:
-                global_vars.add(global_var.name)
-            for define in file_ast.defines:
-                global_vars.add(define.name)
-            for function in file_ast.functions:
-                functions.add(function.name)
+        env = self.packages_env[package_name]
 
         for file_ast in files_ast:
-            packages: set[str] = set()
+            packages: dict[str, str] = {}
 
             for use in file_ast.imports:
                 if use.alias:
-                    packages.add(use.alias)
+                    packages[use.alias] = use.package
                 else:
-                    packages.add(use.package)
+                    packages[use.package] = use.package
 
-            scopes: list[set[str]] = [global_vars]
+            scopes: list[dict[str, object]] = [dict(env.variables)]
 
             for function in file_ast.functions:
-                self.analyze_function(function, scopes, functions, packages, file_ast)
+                self.analyze_function(function, scopes, env, packages, file_ast)
 
     def analyze_function(
         self,
         function: Function,
-        scopes: list[set[str]],
-        functions: set[str],
-        packages: set[str],
+        scopes: list[dict[str, object]],
+        env: PackageEnv,
+        packages: dict[str, str],
         file_ast: FileAst,
     ):
-        fun_scope: set[str] = set()
+        fun_scope: dict[str, object] = {}
 
         for param in function.params:
-            fun_scope.add(param.name)
+            fun_scope[param.name] = param
 
         for result in function.results:
-            fun_scope.add(result.name)
+            fun_scope[result.name] = result
 
         scopes.append(fun_scope)
 
         for statement in function.body.statements:
-            self.analyze_statement(statement, scopes, functions, packages, file_ast)
+            self.analyze_statement(statement, scopes, env, packages, file_ast)
 
         scopes.pop()
 
     def analyze_statement(
         self,
         statement: Statement,
-        scopes: list[set[str]],
-        functions: set[str],
-        packages: set[str],
+        scopes: list[dict[str, object]],
+        env: PackageEnv,
+        packages: dict[str, str],
         file_ast: FileAst,
     ):
         if isinstance(statement, Block):
-            scopes.append(set())
+            scopes.append({})
             for stmt in statement.statements:
-                self.analyze_statement(stmt, scopes, functions, packages, file_ast)
+                self.analyze_statement(stmt, scopes, env, packages, file_ast)
             scopes.pop()
 
         elif isinstance(statement, Variable):
             if statement.value:
                 self.analyze_expression(
-                    statement.value, scopes, functions, packages, file_ast
+                    statement.value, scopes, env, packages, file_ast
                 )
-            scopes[-1].add(statement.name)
+            scopes[-1][statement.name] = statement
 
         elif isinstance(statement, Assign):
             for target in statement.targets:
-                self.analyze_expression(target, scopes, functions, packages, file_ast)
+                self.analyze_expression(target, scopes, env, packages, file_ast)
             if statement.value:
                 self.analyze_expression(
-                    statement.value, scopes, functions, packages, file_ast
+                    statement.value, scopes, env, packages, file_ast
                 )
 
         elif isinstance(statement, Return):
@@ -172,23 +194,21 @@ class SemanticAnalyzer:
 
         elif isinstance(statement, If):
             self.analyze_expression(
-                statement.condition, scopes, functions, packages, file_ast
+                statement.condition, scopes, env, packages, file_ast
             )
             self.analyze_statement(
-                statement.then_block, scopes, functions, packages, file_ast
+                statement.then_block, scopes, env, packages, file_ast
             )
             if statement.else_block:
                 self.analyze_statement(
-                    statement.else_block, scopes, functions, packages, file_ast
+                    statement.else_block, scopes, env, packages, file_ast
                 )
 
         elif isinstance(statement, While):
             self.analyze_expression(
-                statement.condition, scopes, functions, packages, file_ast
+                statement.condition, scopes, env, packages, file_ast
             )
-            self.analyze_statement(
-                statement.body, scopes, functions, packages, file_ast
-            )
+            self.analyze_statement(statement.body, scopes, env, packages, file_ast)
 
         elif isinstance(statement, Break):
             pass
@@ -197,9 +217,7 @@ class SemanticAnalyzer:
             pass
 
         elif isinstance(statement, ExprStatement):
-            self.analyze_expression(
-                statement.value, scopes, functions, packages, file_ast
-            )
+            self.analyze_expression(statement.value, scopes, env, packages, file_ast)
 
         elif isinstance(statement, Asm):
             pass
@@ -207,9 +225,9 @@ class SemanticAnalyzer:
     def analyze_expression(
         self,
         expression: Expression,
-        scopes: list[set[str]],
-        functions: set[str],
-        packages: set[str],
+        scopes: list[dict[str, object]],
+        env: PackageEnv,
+        packages: dict[str, str],
         file_ast: FileAst,
     ):
         if isinstance(expression, Number):
@@ -217,9 +235,11 @@ class SemanticAnalyzer:
 
         elif isinstance(expression, Name):
             name = expression.value
-            if name in packages:
+            is_variable = any(name in scope for scope in reversed(scopes))
+
+            if is_variable:
                 pass
-            elif any(name in scope for scope in reversed(scopes)):
+            elif name in packages:
                 pass
             else:
                 self.r.error(
@@ -227,37 +247,48 @@ class SemanticAnalyzer:
                 )
 
         elif isinstance(expression, Operation1):
-            self.analyze_expression(
-                expression.value, scopes, functions, packages, file_ast
-            )
+            self.analyze_expression(expression.value, scopes, env, packages, file_ast)
 
         elif isinstance(expression, Operation2):
-            self.analyze_expression(
-                expression.left, scopes, functions, packages, file_ast
-            )
-            self.analyze_expression(
-                expression.right, scopes, functions, packages, file_ast
-            )
+            self.analyze_expression(expression.left, scopes, env, packages, file_ast)
+            self.analyze_expression(expression.right, scopes, env, packages, file_ast)
 
         elif isinstance(expression, Call):
             if isinstance(expression.value, Name):
                 name = expression.value.value
 
-                if name not in functions:
+                if name not in env.functions:
                     self.r.error(
                         f"Use of undeclared function '{name}' at {file_ast.path.name}:{expression.line}:{expression.column}"
                     )
+            elif isinstance(expression.value, MemberAccess):
+                self.analyze_expression(
+                    expression.value, scopes, env, packages, file_ast
+                )
+
+                if expression.value.type == MemberAccessType.PACKAGE:
+                    if isinstance(expression.value.value, Name):
+                        pkg_alias = expression.value.value.value
+                        func_name = expression.value.member
+
+                        name = packages.get(pkg_alias)
+                        if name is not None:
+                            target_env = self.packages_env.get(name)
+
+                            if not target_env or func_name not in target_env.functions:
+                                self.r.error(
+                                    f"Function '{func_name}' not found in package '{pkg_alias}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                                )
             else:
                 self.analyze_expression(
-                    expression.value, scopes, functions, packages, file_ast
+                    expression.value, scopes, env, packages, file_ast
                 )
-                for arg in expression.args:
-                    self.analyze_expression(arg, scopes, functions, packages, file_ast)
+
+            for arg in expression.args:
+                self.analyze_expression(arg, scopes, env, packages, file_ast)
 
         elif isinstance(expression, MemberAccess):
-            self.analyze_expression(
-                expression.value, scopes, functions, packages, file_ast
-            )
+            self.analyze_expression(expression.value, scopes, env, packages, file_ast)
 
             if isinstance(expression.value, Name):
                 ident = expression.value.value
@@ -276,24 +307,22 @@ class SemanticAnalyzer:
                 expression.type = MemberAccessType.FIELD
 
         elif isinstance(expression, Index):
-            self.analyze_expression(
-                expression.value, scopes, functions, packages, file_ast
-            )
-            self.analyze_expression(
-                expression.index, scopes, functions, packages, file_ast
-            )
+            self.analyze_expression(expression.value, scopes, env, packages, file_ast)
+            self.analyze_expression(expression.index, scopes, env, packages, file_ast)
 
         elif isinstance(expression, ArrayValue):
             for val in expression.values:
-                self.analyze_expression(val, scopes, functions, packages, file_ast)
+                self.analyze_expression(val, scopes, env, packages, file_ast)
 
         elif isinstance(expression, StructValue):
             for field in expression.fields:
-                self.analyze_expression(
-                    field.value, scopes, functions, packages, file_ast
-                )
+                self.analyze_expression(field.value, scopes, env, packages, file_ast)
 
     def analyze(self):
         for package_name, files_ast in self.project_ast.items():
             self.check_duplication(package_name, files_ast)
+
+        self.build_environments()
+
+        for package_name, files_ast in self.project_ast.items():
             self.analyze_package(package_name, files_ast)
