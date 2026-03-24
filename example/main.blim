@@ -1,0 +1,25 @@
+package main
+
+use math
+
+Vector: struct {
+    x: i16
+    y: i16
+}
+
+vector1: Vector // global
+
+main: fun() {
+    vector2: Vector // local
+
+    vector1.x = 3
+    vector1.y = -2
+
+    vector2.x = -1
+    vector2.y = 5
+
+    result1: i16 = math.add_i16(vector1.x, vector1.y)
+    result2: i16 = vector2.x + vector2.y
+
+    return
+}

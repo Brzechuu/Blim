@@ -1,0 +1,11 @@
+package math
+
+add_i16: fun(a: i16, b: i16) -> result: i16 {
+    result = a + b
+    return
+}
+
+add_u16: fun(a: u16, b: u16) -> result: u16 {
+    result = a + b
+    return
+}
