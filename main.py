@@ -96,10 +96,6 @@ def main():
                     print("  + Imports:")
                     for item in file_ast.imports:
                         print(f"    - {item.package}")
-                if file_ast.defines:
-                    print("  + Defines:")
-                    for item in file_ast.defines:
-                        print(f"    - {item.name}")
                 if file_ast.global_variables:
                     print("  + Global variables:")
                     for item in file_ast.global_variables:
