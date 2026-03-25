@@ -1,4 +1,5 @@
-from enum import IntEnum
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum, auto
 
 from blim_parser import (
     ArrayValue,
@@ -14,6 +15,7 @@ from blim_parser import (
     Function,
     If,
     Index,
+    IntType,
     MemberAccess,
     Name,
     Number,
@@ -30,34 +32,57 @@ from blim_reporter import Reporter
 
 class Register(IntEnum):
     R0 = 0
-    A0 = R1 = 1
-    A1 = R2 = 2
-    A2 = R3 = 3
-    A3 = R4 = 4
-    B0 = R5 = 5
-    B1 = R6 = 6
-    B2 = R7 = 7
-    B3 = R8 = 8
-    G0 = R9 = 9
-    G1 = R10 = 10
-    G2 = R11 = 11
-    G3 = R12 = 12
-    FL = R13 = 13
-    SP = R14 = 14
-    PC = R15 = 15
+    A0 = 1
+    A1 = 2
+    A2 = 3
+    A3 = 4
+    B0 = 5
+    B1 = 6
+    B2 = 7
+    B3 = 8
+    G0 = 9
+    G1 = 10
+    G2 = 11
+    G3 = 12
+    FL = 13
+    SP = 14
+    PC = 15
 
 
-class RegisterState(IntEnum):
-    FREE = 0
-    ALLOCATED = 1
-    RESERVED = 2
+class RegisterState(Enum):
+    FREE = auto()
+    ALLOCATED = auto()
+    RESERVED = auto()
 
 
-class RegisterType(IntEnum):
-    A = 0
-    B = 1
-    G = 2
-    SPECIAL = 3
+class RegisterType(Enum):
+    A = auto()
+    B = auto()
+    G = auto()
+    SPECIAL = auto()
+
+
+class SymbolType(Enum):
+    STRUCT = auto()
+    ARRAY = auto()
+
+
+class SymbolRange(Enum):
+    GLOBAL = auto()
+    LOCAL = auto()
+    PARAM = auto()
+    RESULT = auto()
+
+
+@dataclass
+class Symbol:
+    name: str
+    type: SymbolType | IntType
+    range: SymbolRange
+    size: int = 1
+    offset: int = 0
+    label: str | None = None
+    fields: list["Symbol"] = field(default_factory=list)
 
 
 class RegisterAllocator:
