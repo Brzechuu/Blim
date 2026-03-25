@@ -63,7 +63,7 @@ class RegisterType(IntEnum):
 class RegisterAllocator:
     def __init__(self, reporter: Reporter):
         self.reg_states: dict[Register, RegisterState] = {
-            Register.R0: RegisterState.RESERVED,
+            Register.R0: RegisterState.RESERVED,  # Always zero
             Register.A0: RegisterState.FREE,
             Register.A1: RegisterState.FREE,
             Register.A2: RegisterState.FREE,
@@ -75,10 +75,10 @@ class RegisterAllocator:
             Register.G0: RegisterState.FREE,
             Register.G1: RegisterState.FREE,
             Register.G2: RegisterState.FREE,
-            Register.G3: RegisterState.FREE,
-            Register.FL: RegisterState.RESERVED,
-            Register.SP: RegisterState.RESERVED,
-            Register.PC: RegisterState.RESERVED,
+            Register.G3: RegisterState.RESERVED,  # Frame pointer
+            Register.FL: RegisterState.RESERVED,  # Flag register
+            Register.SP: RegisterState.RESERVED,  # Stack pointer
+            Register.PC: RegisterState.RESERVED,  # Program counter
         }
         self.r = reporter
 
