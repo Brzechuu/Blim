@@ -181,7 +181,7 @@ class CodeGenerator:
         elif isinstance(statement, ExprStatement):
             pass
 
-        if isinstance(statement, Asm):
+        elif isinstance(statement, Asm):
             for line in statement.lines:
                 self.emit_instruction(line)
 
