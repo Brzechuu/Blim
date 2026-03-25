@@ -251,23 +251,30 @@ class SemanticAnalyzer:
                         f"Use of undeclared function '{name}' at {file_ast.path.name}:{expression.line}:{expression.column}"
                     )
             elif isinstance(expression.value, MemberAccess):
-                self.analyze_expression(
-                    expression.value, scopes, env, packages, file_ast
-                )
+                package_call = False
 
-                if expression.value.type == MemberAccessType.PACKAGE:
-                    if isinstance(expression.value.value, Name):
-                        pkg_alias = expression.value.value.value
+                if isinstance(expression.value.value, Name):
+                    pkg_alias = expression.value.value.value
+                    if pkg_alias in packages:
+                        package_call = True
+                        expression.value.type = MemberAccessType.PACKAGE
                         func_name = expression.value.member
 
-                        name = packages.get(pkg_alias)
-                        if name is not None:
-                            target_env = self.packages_env.get(name)
+                        target_env = self.packages_env.get(packages[pkg_alias])
+                        if target_env is None:
+                            self.r.error(
+                                f"Package '{packages[pkg_alias]}' not found at {file_ast.path.name}:{expression.line}:{expression.column}"
+                            )
+                        elif func_name not in target_env.functions:
+                            self.r.error(
+                                f"Function '{func_name}' not found in package '{pkg_alias}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                            )
 
-                            if not target_env or func_name not in target_env.functions:
-                                self.r.error(
-                                    f"Function '{func_name}' not found in package '{pkg_alias}' at {file_ast.path.name}:{expression.line}:{expression.column}"
-                                )
+                if not package_call:
+                    self.analyze_expression(
+                        expression.value, scopes, env, packages, file_ast
+                    )
+
             else:
                 self.analyze_expression(
                     expression.value, scopes, env, packages, file_ast
@@ -277,8 +284,6 @@ class SemanticAnalyzer:
                 self.analyze_expression(arg, scopes, env, packages, file_ast)
 
         elif isinstance(expression, MemberAccess):
-            self.analyze_expression(expression.value, scopes, env, packages, file_ast)
-
             if isinstance(expression.value, Name):
                 ident = expression.value.value
 
@@ -288,11 +293,26 @@ class SemanticAnalyzer:
                     expression.type = MemberAccessType.FIELD
                 elif ident in packages:
                     expression.type = MemberAccessType.PACKAGE
+
+                    target_env = self.packages_env.get(packages[ident])
+                    member_name = expression.member
+
+                    if target_env is None:
+                        self.r.error(
+                            f"Package '{packages[ident]}' not found at {file_ast.path.name}:{expression.line}:{expression.column}"
+                        )
+                    elif member_name not in target_env.variables:
+                        self.r.error(
+                            f"Variable '{member_name}' not found in package '{ident}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                        )
                 else:
                     self.r.error(
                         f"Unknown identifier '{ident}' before '.' at {file_ast.path.name}:{expression.line}:{expression.column}"
                     )
             else:
+                self.analyze_expression(
+                    expression.value, scopes, env, packages, file_ast
+                )
                 expression.type = MemberAccessType.FIELD
 
         elif isinstance(expression, Index):
