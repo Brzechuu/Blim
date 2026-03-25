@@ -1,6 +1,30 @@
 from enum import IntEnum
 
-from blim_parser import Asm, Block, FileAst, Function, Return, Statement
+from blim_parser import (
+    ArrayValue,
+    Asm,
+    Assign,
+    Block,
+    Break,
+    Call,
+    Continue,
+    Expression,
+    ExprStatement,
+    FileAst,
+    Function,
+    If,
+    Index,
+    MemberAccess,
+    Name,
+    Number,
+    Operation1,
+    Operation2,
+    Return,
+    Statement,
+    StructValue,
+    Variable,
+    While,
+)
 from blim_reporter import Reporter
 
 
@@ -108,6 +132,7 @@ class CodeGenerator:
         self.project_ast = project_ast
         self.lines: list[str] = []
         self.r = reporter
+        self.allocator = RegisterAllocator(reporter)
 
     def emit_instruction(self, instruction: str = ""):
         self.lines.append(f"\t{instruction}")
@@ -122,21 +147,73 @@ class CodeGenerator:
 
     def gen_function(self, package: str, function: Function):
         self.emit_label(f"{package}__{function.name}")
-        self.gen_block(function.body)
+        self.gen_statement(function.body)
         if self.lines[-1] != "\tret":
             self.emit_instruction("ret")
         self.emit_raw()
 
-    def gen_block(self, block: Block):
-        for statement in block.statements:
-            self.gen_statement(statement)
-
     def gen_statement(self, statement: Statement):
+        if isinstance(statement, Block):
+            for s in statement.statements:
+                self.gen_statement(s)
+
+        elif isinstance(statement, Variable):
+            pass
+
+        elif isinstance(statement, Assign):
+            pass
+
+        elif isinstance(statement, Return):
+            self.emit_instruction("ret")
+
+        elif isinstance(statement, If):
+            pass
+
+        elif isinstance(statement, While):
+            pass
+
+        elif isinstance(statement, Break):
+            pass
+
+        elif isinstance(statement, Continue):
+            pass
+
+        elif isinstance(statement, ExprStatement):
+            pass
+
         if isinstance(statement, Asm):
             for line in statement.lines:
                 self.emit_instruction(line)
-        elif isinstance(statement, Return):
-            self.emit_instruction("ret")
+
+    def gen_expression(self, expression: Expression) -> Register:
+        if isinstance(expression, Number):
+            pass
+
+        elif isinstance(expression, Name):
+            pass
+
+        elif isinstance(expression, Operation1):
+            pass
+
+        elif isinstance(expression, Operation2):
+            pass
+
+        elif isinstance(expression, Call):
+            pass
+
+        elif isinstance(expression, MemberAccess):
+            pass
+
+        elif isinstance(expression, Index):
+            pass
+
+        elif isinstance(expression, ArrayValue):
+            pass
+
+        elif isinstance(expression, StructValue):
+            pass
+
+        return Register.R0
 
     # ---------------
 
