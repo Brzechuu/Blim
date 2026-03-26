@@ -5,7 +5,6 @@ from pathlib import Path
 from blim_codegen import CodeGenerator
 from blim_lexer import Lexer, TokenType
 from blim_parser import FileAst, Parser
-from blim_preprocessor import Preprocessor
 from blim_reporter import Reporter
 from blim_semanalyzer import SemanticAnalyzer
 
@@ -67,11 +66,6 @@ def main():
                 r.error(
                     f"Illegal token '{token.value}' in {path.relative_to(project_path)}:{token.line}:{token.column}"
                 )
-
-        if r.error_counter:
-            raise SystemExit(1)
-
-        tokens = Preprocessor(tokens, path, project_path, r).process()
 
         if r.error_counter:
             raise SystemExit(1)

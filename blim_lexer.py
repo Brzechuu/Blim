@@ -18,7 +18,7 @@ class TokenType(Enum):
     ELSE = auto()
     TYPE = auto()
 
-    HASH_DEF = auto()
+    HASH_DIRECTIVE = auto()
 
     IDENTIFIER = auto()
     NUMBER = auto()
@@ -98,7 +98,7 @@ class Lexer:
             ("COMMENT", r"//.*"),
             ("WHITESPACE", r"[ \t\r]+"),
             ("NEW_LINE", r"\n"),
-            ("HASH_DEF", r"#def"),
+            ("HASH_DIRECTIVE", r"#[a-zA-Z_]+"),
             ("NUMBER", r"0[xX][0-9a-fA-F]+|0[bB][01]+|\d+"),
             ("IDENTIFIER", r"[a-zA-Z_][a-zA-Z0-9_]*"),
             ("EQUAL", r"=="),

@@ -203,6 +203,18 @@ class GlobalVariable(Node):
 
 
 @dataclass
+class Define(Node):
+    name: str
+    value: str
+
+
+@dataclass
+class InterruptVector(Node):
+    func_name: str
+    vector_number: int
+
+
+@dataclass
 class FileAst(Node):
     path: Path
     package: str
@@ -210,6 +222,8 @@ class FileAst(Node):
     structures: list[Struct] = field(default_factory=list)
     global_variables: list[GlobalVariable] = field(default_factory=list)
     functions: list[Function] = field(default_factory=list)
+    defines: list[Define] = field(default_factory=list)
+    interrupt_vectors: list[InterruptVector] = field(default_factory=list)
 
 
 class Parser:
@@ -558,6 +572,42 @@ class Parser:
 
             if token.type == TokenType.USE:
                 ast.imports.append(self.parse_use())
+
+            elif token.type == TokenType.HASH_DIRECTIVE:
+                self.pos += 1
+                directive_name = token.value[1:]
+
+                if directive_name == "def":
+                    name_tok = self.expect(TokenType.IDENTIFIER)
+                    val_tok = self.expect(TokenType.NUMBER)
+
+                    ast.defines.append(
+                        Define(
+                            line=token.line,
+                            column=token.column,
+                            name=name_tok.value,
+                            value=val_tok.value,
+                        )
+                    )
+
+                elif directive_name == "vec":
+                    func_name_tok = self.expect(TokenType.IDENTIFIER)
+                    vec_num_tok = self.expect(TokenType.NUMBER)
+
+                    ast.interrupt_vectors.append(
+                        InterruptVector(
+                            line=token.line,
+                            column=token.column,
+                            func_name=func_name_tok.value,
+                            vector_number=int(vec_num_tok.value, 0),
+                        )
+                    )
+
+                else:
+                    self.r.error(
+                        f"Unknown directive '#{directive_name}' in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                    )
+
             elif token.type == TokenType.IDENTIFIER:
                 self.pos += 1
                 self.expect(TokenType.COLON)
