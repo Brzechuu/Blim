@@ -106,15 +106,6 @@ class SemanticAnalyzer:
                     )
                 package_symbols[struct.name] = "struct"
 
-        vectors: set[int] = set()
-        for file_ast in files_ast:
-            for vec in file_ast.interrupt_vectors:
-                if vec.vector_number in vectors:
-                    self.r.error(
-                        f"Duplicate interrupt vector '{vec.vector_number}' at {file_ast.path.name}:{vec.line}:{vec.column}"
-                    )
-                vectors.add(vec.vector_number)
-
     def build_environments(self):
         for pkg_name, files_ast in self.project_ast.items():
             env = PackageEnv(variables={}, functions={}, structs={}, defines={})
@@ -399,6 +390,16 @@ class SemanticAnalyzer:
                 self.analyze_expression(field.value, scopes, env, packages, file_ast)
 
     def analyze(self):
+        global_vectors: set[int] = set()
+        for files_ast in self.project_ast.values():
+            for file_ast in files_ast:
+                for vec in file_ast.interrupt_vectors:
+                    if vec.vector_number in global_vectors:
+                        self.r.error(
+                            f"Duplicate interrupt vector '{vec.vector_number}' at {file_ast.path.name}:{vec.line}:{vec.column}"
+                        )
+                    global_vectors.add(vec.vector_number)
+
         for package_name, files_ast in self.project_ast.items():
             self.check_duplication(package_name, files_ast)
 
