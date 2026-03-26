@@ -2,6 +2,8 @@ package main
 
 use math
 
+#vec main 0
+
 Vector: struct {
     x: i16
     y: i16
