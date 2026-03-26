@@ -133,11 +133,11 @@ class SemanticAnalyzer:
                     )
                 else:
                     func = env.functions[vec.func_name]
-                    if len(func.params) > 0:
+                    if len(func.params) > 0 and vec.vector_number < 16:
                         self.r.error(
                             f"Interrupt handler function '{vec.func_name}' cannot take parameters at {file_ast.path.name}:{vec.line}:{vec.column}"
                         )
-                    if len(func.results) > 0:
+                    if len(func.results) > 0 and vec.vector_number < 16:
                         self.r.error(
                             f"Interrupt handler function '{vec.func_name}' cannot return results at {file_ast.path.name}:{vec.line}:{vec.column}"
                         )
