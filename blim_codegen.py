@@ -131,6 +131,8 @@ class RegisterAllocator:
         raise SystemExit(1)
 
     def reg_free(self, register: Register):
+        if register == Register.R0:
+            return
         if self.reg_state(register) == RegisterState.ALLOCATED:
             self.reg_states[register] = RegisterState.FREE
             return
@@ -215,7 +217,92 @@ class CodeGenerator:
             pass
 
         elif isinstance(expression, Operation2):
-            pass
+            target: Register
+            basic_ops = {
+                "+": "add",
+                "-": "sub",
+                "&": "and",
+                "|": "or",
+                "^": "xor",
+                "!&": "nand",
+                "!|": "nor",
+                "!^": "xnor",
+            }
+            shifts = {
+                "<<": "sll",
+                ">>": "srl",
+                "<<<": "rol",
+                ">>>": "ror",
+                ">=>": "sra",
+            }
+            if expression.op in basic_ops:
+                # TODO: optimization
+                left_reg = self.gen_expression(expression.left, RegisterType.A)
+                right_reg = self.gen_expression(expression.right, RegisterType.B)
+                if target_register_type == RegisterType.A:
+                    target = left_reg
+                    self.allocator.reg_free(right_reg)
+                elif target_register_type == RegisterType.B:
+                    target = right_reg
+                    self.allocator.reg_free(left_reg)
+                else:
+                    target = self.allocator.reg_alloc(target_register_type)
+                    self.allocator.reg_free(left_reg)
+                    self.allocator.reg_free(right_reg)
+                self.emit(
+                    f"\t{basic_ops[expression.op]} {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(target)}"
+                )
+                return target
+            elif expression.op in shifts:
+                if not isinstance(expression.right, Number):
+                    self.r.error("Dynamic shifts is not supported (yet).")  # TODO
+                    raise SystemExit(1)
+                if expression.right.value >= 16:
+                    self.r.error("You can't shift by 16 bits or more.")
+                    raise SystemExit(1)
+                if expression.right.value == 0:
+                    reg = self.gen_expression(expression.left, target_register_type)
+                    return reg
+                if target_register_type in (RegisterType.A, RegisterType.B):
+                    reg = self.gen_expression(expression.left, target_register_type)
+                    target = reg
+                else:
+                    reg = self.gen_expression(expression.left, RegisterType.A)
+                    target = self.allocator.reg_alloc(target_register_type)
+                if expression.op == "<<<" or expression.op == ">>>":
+                    for _ in range(1, expression.right.value):
+                        self.emit(
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        )
+                    self.emit(
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                    )
+                elif expression.right.value == 8:
+                    self.emit(
+                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                    )
+                elif expression.right.value > 8:
+                    self.emit(
+                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                    )
+                    for _ in range(1, expression.right.value - 8):
+                        self.emit(
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        )
+                    self.emit(
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                    )
+                else:
+                    for _ in range(1, expression.right.value):
+                        self.emit(
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        )
+                    self.emit(
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                    )
+                if target != reg:
+                    self.allocator.reg_free(reg)
+                return target
 
         elif isinstance(expression, Call):
             pass
