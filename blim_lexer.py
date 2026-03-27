@@ -42,6 +42,9 @@ class TokenType(Enum):
     BANG = auto()  # !
     LEFT_SHIFT = auto()  # <<
     RIGHT_SHIFT = auto()  # >>
+    LEFT_ROTATE = auto()  # <<<
+    RIGHT_ROTATE = auto()  # >>>
+    RIGHT_ARITHMETIC_SHIFT = auto()  # >=>
     ARROW = auto()  # ->
     PERCENT = auto()  # %
 
@@ -101,6 +104,9 @@ class Lexer:
             ("HASH_DIRECTIVE", r"#[a-zA-Z_]+"),
             ("NUMBER", r"0[xX][0-9a-fA-F]+|0[bB][01]+|\d+"),
             ("IDENTIFIER", r"[a-zA-Z_][a-zA-Z0-9_]*"),
+            ("LEFT_ROTATE", r"<<<"),
+            ("RIGHT_ROTATE", r">>>"),
+            ("RIGHT_ARITHMETIC_SHIFT", r">=>"),
             ("EQUAL", r"=="),
             ("NOT_EQUAL", r"!="),
             ("LESS_EQUAL", r"<="),
