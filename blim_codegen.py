@@ -195,10 +195,15 @@ class CodeGenerator:
         self.id_counter = 0
         self.emit(f"{package}__{function.name}:")
 
+        self.emit("\tpush g3")
+        self.emit("\tmov sp, g3")
+
         self.gen_statement(function.body)
 
-        if not self.lines or self.lines[-1] != "\tret":
-            self.emit("\tret")
+        self.emit(" .return:")
+        self.emit("\tmov g3, sp")
+        self.emit("\tpop g3")
+        self.emit("\tret")
         self.emit()
 
     def gen_statement(self, statement: Statement):
@@ -213,35 +218,35 @@ class CodeGenerator:
             pass
 
         elif isinstance(statement, Return):
-            self.emit("\tret")
+            self.emit("\tjmp .return")
 
         elif isinstance(statement, If):
             id = self.statement_id()
-
+            self.emit(f" .if_start_{id}:")
             if statement.else_block:
                 self.gen_condition(
                     statement.condition, false_jump_label=f".if_else_{id}"
                 )
                 self.gen_statement(statement.then_block)
                 self.emit(f"\tjmp .if_end_{id}")
-                self.emit(f".if_else_{id}:")
+                self.emit(f" .if_else_{id}:")
                 self.gen_statement(statement.else_block)
-                self.emit(f".if_end_{id}:")
+                self.emit(f" .if_end_{id}:")
             else:
                 self.gen_condition(
                     statement.condition, false_jump_label=f".if_end_{id}"
                 )
                 self.gen_statement(statement.then_block)
-                self.emit(f".if_end_{id}:")
+                self.emit(f" .if_end_{id}:")
 
         elif isinstance(statement, While):
             id = self.statement_id()
             self.loop_stack.append(id)
-            self.emit(f".while_start_{id}:")
+            self.emit(f" .while_start_{id}:")
             self.gen_condition(statement.condition, false_jump_label=f".while_end_{id}")
             self.gen_statement(statement.body)
             self.emit(f"\tjmp .while_start_{id}")
-            self.emit(f".while_end_{id}:")
+            self.emit(f" .while_end_{id}:")
 
             self.loop_stack.pop()
 
@@ -283,26 +288,35 @@ class CodeGenerator:
                     left_reg = self.allocator.reg_alloc(RegisterType.A)  # TODO
                     right_reg = self.allocator.reg_alloc(RegisterType.B)  # TODO
 
-                left_name = self.allocator.reg_name(left_reg)
-                right_name = self.allocator.reg_name(right_reg)
-
                 if expression.op == "==":
-                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+                    )
                     self.emit(f"\tjmp ne, {false_jump_label}")
                 elif expression.op == "!=":
-                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+                    )
                     self.emit(f"\tjmp zr, {false_jump_label}")
                 elif expression.op == "<":
-                    self.emit(f"\tsub {right_name}, {left_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
+                    )
                     self.emit(f"\tjmp zv, {false_jump_label}")
                 elif expression.op == "<=":
-                    self.emit(f"\tsub {right_name}, {left_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
+                    )
                     self.emit(f"\tjmp nv, {false_jump_label}")
                 elif expression.op == ">":
-                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+                    )
                     self.emit(f"\tjmp zv, {false_jump_label}")
                 elif expression.op == ">=":
-                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(
+                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+                    )
                     self.emit(f"\tjmp nv, {false_jump_label}")
 
                 self.allocator.reg_free(left_reg)
@@ -459,9 +473,9 @@ class CodeGenerator:
                 self.emit("")
                 self.emit("; ------- SYSCALL VECTOR TABLE -------")
             if i in interrupt_map:
-                self.emit(f"\t#d16 {interrupt_map[i]} ; Vector {i}")
+                self.emit(f"#d16 {interrupt_map[i]} ; Vector {i}")
             else:
-                self.emit(f"\t#d16 unhandled ; Vector {i}")
+                self.emit(f"#d16 unhandled ; Vector {i}")
         self.emit()
 
         self.emit("unhandled:")
