@@ -17,6 +17,7 @@ from blim_parser import (
     Index,
     IntType,
     MemberAccess,
+    MemberAccessType,
     Name,
     Number,
     Operation1,
@@ -78,7 +79,7 @@ class SymbolRange(Enum):
 @dataclass
 class Symbol:
     name: str
-    type: SymbolType | IntType
+    type: SymbolType | IntType | str
     range: SymbolRange
     size: int = 1
     offset: int = 0
@@ -184,6 +185,7 @@ class CodeGenerator:
         self.loop_stack: list[int] = []
 
         self.local_vars: dict[str, Symbol] = {}
+        self.current_package: str = ""
 
     def emit(self, text: str = ""):
         self.lines.append(text)
@@ -193,9 +195,10 @@ class CodeGenerator:
         return self.id_counter
 
     def resolve_type_size(self, var_type: Type, current_package: str) -> int:
-        if isinstance(var_type.base_type, IntType):
-            return 1
+        base_size = 1
 
+        if isinstance(var_type.base_type, IntType):
+            base_size = 1
         elif isinstance(var_type.base_type, str):
             struct_name = var_type.base_type
             target_package = current_package
@@ -206,15 +209,53 @@ class CodeGenerator:
                 for file_ast in self.project_ast[target_package]:
                     for struct_def in file_ast.structures:
                         if struct_def.name == struct_name:
-                            return sum(
+                            base_size = sum(
                                 self.resolve_type_size(f.type, target_package)
                                 for f in struct_def.fields
                             )
+                            break
+                    else:
+                        continue
+                    break
+            else:
+                self.r.error(f"Unknown type: {var_type.base_type}")
+                raise SystemExit(1)
 
-            self.r.error(f"Unknown type: {var_type.base_type}")
-            raise SystemExit(1)
+        if var_type.array_size:
+            if isinstance(var_type.array_size, Number):
+                return base_size * var_type.array_size.value
+            else:
+                self.r.error("Array size must be a constant number.")
+                raise SystemExit(1)
 
-        return 1
+        return base_size
+
+    def get_struct_field_offset(
+        self, struct_name: str, field_name: str, current_package: str
+    ) -> int:
+        target_package = current_package
+        if "." in struct_name:
+            target_package, struct_name = struct_name.split(".", 1)
+
+        if target_package in self.project_ast:
+            for file_ast in self.project_ast[target_package]:
+                for struct_def in file_ast.structures:
+                    if struct_def.name == struct_name:
+                        current_offset = 0
+                        for field in struct_def.fields:
+                            if field.name == field_name:
+                                return current_offset
+                            current_offset += self.resolve_type_size(
+                                field.type, target_package
+                            )
+
+                        self.r.error(
+                            f"Field '{field_name}' not found in struct '{struct_name}'"
+                        )
+                        raise SystemExit(1)
+
+        self.r.error(f"Unknown struct type: {struct_name}")
+        raise SystemExit(1)
 
     def compute_frame_layout(self, block: Block, package: str) -> int:
         current_offset = 0
@@ -229,7 +270,7 @@ class CodeGenerator:
                 current_offset -= size
 
                 sym_type = (
-                    SymbolType.STRUCT
+                    statement.type.base_type
                     if isinstance(statement.type.base_type, str)
                     else statement.type.base_type
                 )
@@ -251,11 +292,46 @@ class CodeGenerator:
         traverse(block)
         return abs(current_offset)
 
+    def get_memory_offset(self, expression: Expression) -> int:
+        if isinstance(expression, Name):
+            var_name = expression.value
+            if var_name in self.local_vars:
+                return self.local_vars[var_name].offset
+            else:
+                self.r.error(f"Undefined variable '{var_name}'")
+                raise SystemExit(1)
+
+        elif (
+            isinstance(expression, MemberAccess)
+            and expression.type == MemberAccessType.FIELD
+        ):
+            base_offset = self.get_memory_offset(expression.value)
+
+            if isinstance(expression.value, Name):
+                base_name = expression.value.value
+                symbol = self.local_vars[base_name]
+                if isinstance(symbol.type, str):
+                    field_offset = self.get_struct_field_offset(
+                        symbol.type, expression.member, self.current_package
+                    )
+                    return base_offset + field_offset
+                else:
+                    self.r.error(f"Variable '{base_name}' is not a struct")
+                    raise SystemExit(1)
+            else:
+                self.r.error("Complex member access bases not supported (yet).")  # TODO
+                raise SystemExit(1)
+        else:
+            self.r.error("Invalid left value")
+            raise SystemExit(1)
+
     # ---------------
 
     def gen_function(self, package: str, function: Function):
         self.id_counter = 0
         self.local_vars.clear()
+        self.current_package = package
+
         total_local_size = self.compute_frame_layout(function.body, package)
 
         self.emit(f"{package}__{function.name}:")
@@ -319,16 +395,17 @@ class CodeGenerator:
             if statement.value:
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
                 target_expr = statement.targets[0]
-                if isinstance(target_expr, Name):
-                    symbol = self.local_vars[target_expr.value]
+                if isinstance(target_expr, (Name, MemberAccess)):
+                    final_offset = self.get_memory_offset(target_expr)
+
                     base_reg = self.allocator.reg_alloc(RegisterType.A)
                     offset_reg = self.allocator.reg_alloc(RegisterType.B)
                     self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
-                    if symbol.offset == 0:
+                    if final_offset == 0:
                         self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
                     else:
                         self.emit(
-                            f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
+                            f"\tmov {final_offset}, {self.allocator.reg_name(offset_reg)}"
                         )
                     self.emit(
                         f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
@@ -340,7 +417,7 @@ class CodeGenerator:
                     self.allocator.reg_free(offset_reg)
                 else:
                     self.r.error(
-                        "Assignments to complex structures (like arrays) are not yet supported."
+                        "Assignments to complex structures are not supported (yet)."
                     )
                     raise SystemExit(1)
                 self.allocator.reg_free(value_reg)
@@ -469,40 +546,40 @@ class CodeGenerator:
                 self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
             return reg
 
-        elif isinstance(expression, Name):
-            var_name = expression.value
+        elif isinstance(expression, (Name, MemberAccess)):
+            if (
+                isinstance(expression, MemberAccess)
+                and expression.type == MemberAccessType.PACKAGE
+            ):
+                pass
 
-            if var_name in self.local_vars:
-                symbol = self.local_vars[var_name]
+            final_offset = self.get_memory_offset(expression)
 
-                base_reg = self.allocator.reg_alloc(RegisterType.A)
-                offset_reg = self.allocator.reg_alloc(RegisterType.B)
+            base_reg = self.allocator.reg_alloc(RegisterType.A)
+            offset_reg = self.allocator.reg_alloc(RegisterType.B)
 
-                self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+            self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
 
-                if symbol.offset == 0:
-                    self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
-                else:
-                    self.emit(
-                        f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
-                    )
-
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
-                )
-
-                target = self.allocator.reg_alloc(target_register_type)
-                self.emit(
-                    f"\tload [{self.allocator.reg_name(base_reg)}], {self.allocator.reg_name(target)}"
-                )
-
-                self.allocator.reg_free(base_reg)
-                self.allocator.reg_free(offset_reg)
-
-                return target
+            if final_offset == 0:
+                self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
             else:
-                self.r.error(f"Undefined variable '{var_name}'")
-                raise SystemExit(1)
+                self.emit(
+                    f"\tmov {final_offset}, {self.allocator.reg_name(offset_reg)}"
+                )
+
+            self.emit(
+                f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
+            )
+
+            target = self.allocator.reg_alloc(target_register_type)
+            self.emit(
+                f"\tload [{self.allocator.reg_name(base_reg)}], {self.allocator.reg_name(target)}"
+            )
+
+            self.allocator.reg_free(base_reg)
+            self.allocator.reg_free(offset_reg)
+
+            return target
 
         elif isinstance(expression, Operation1):
             pass
@@ -596,9 +673,6 @@ class CodeGenerator:
                 return target
 
         elif isinstance(expression, Call):
-            pass
-
-        elif isinstance(expression, MemberAccess):
             pass
 
         elif isinstance(expression, Index):
