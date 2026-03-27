@@ -85,6 +85,25 @@ class Symbol:
     fields: list["Symbol"] = field(default_factory=list)
 
 
+ARGUMENT_REGISTERS = (
+    Register.A0,
+    Register.B0,
+    Register.A1,
+    Register.B1,
+    Register.A2,
+    Register.B2,
+    Register.A3,
+    Register.B3,
+)
+
+RESULT_REGISTERS = (
+    Register.A0,
+    Register.A1,
+    Register.A2,
+    Register.A3,
+)
+
+
 class RegisterAllocator:
     def __init__(self, reporter: Reporter):
         self.reg_states: dict[Register, RegisterState] = {
@@ -160,16 +179,25 @@ class CodeGenerator:
         self.lines: list[str] = []
         self.r = reporter
         self.allocator = RegisterAllocator(reporter)
+        self.id_counter = 0
+        self.loop_stack: list[int] = []
 
     def emit(self, text: str = ""):
         self.lines.append(text)
 
+    def statement_id(self) -> int:
+        self.id_counter += 1
+        return self.id_counter
+
     # ---------------
 
     def gen_function(self, package: str, function: Function):
+        self.id_counter = 0
         self.emit(f"{package}__{function.name}:")
+
         self.gen_statement(function.body)
-        if self.lines[-1] != "\tret":
+
+        if not self.lines or self.lines[-1] != "\tret":
             self.emit("\tret")
         self.emit()
 
@@ -188,16 +216,48 @@ class CodeGenerator:
             self.emit("\tret")
 
         elif isinstance(statement, If):
-            pass
+            id = self.statement_id()
+
+            if statement.else_block:
+                self.gen_condition(
+                    statement.condition, false_jump_label=f".if_else_{id}"
+                )
+                self.gen_statement(statement.then_block)
+                self.emit(f"\tjmp .if_end_{id}")
+                self.emit(f".if_else_{id}:")
+                self.gen_statement(statement.else_block)
+                self.emit(f".if_end_{id}:")
+            else:
+                self.gen_condition(
+                    statement.condition, false_jump_label=f".if_end_{id}"
+                )
+                self.gen_statement(statement.then_block)
+                self.emit(f".if_end_{id}:")
 
         elif isinstance(statement, While):
-            pass
+            id = self.statement_id()
+            self.loop_stack.append(id)
+            self.emit(f".while_start_{id}:")
+            self.gen_condition(statement.condition, false_jump_label=f".while_end_{id}")
+            self.gen_statement(statement.body)
+            self.emit(f"\tjmp .while_start_{id}")
+            self.emit(f".while_end_{id}:")
+
+            self.loop_stack.pop()
 
         elif isinstance(statement, Break):
-            pass
+            if not self.loop_stack:
+                self.r.error("Cannot 'break' outside of a loop.")
+                raise SystemExit(1)
+            id = self.loop_stack[-1]
+            self.emit(f"\tjmp .while_end_{id}")
 
         elif isinstance(statement, Continue):
-            pass
+            if not self.loop_stack:
+                self.r.error("Cannot 'continue' outside of a loop.")
+                raise SystemExit(1)
+            id = self.loop_stack[-1]
+            self.emit(f"\tjmp .while_start_{id}")
 
         elif isinstance(statement, ExprStatement):
             pass
@@ -206,9 +266,63 @@ class CodeGenerator:
             for line in statement.lines:
                 self.emit(f"\t{line}")
 
-    def gen_expression(self, expression: Expression) -> Register:
+    def gen_condition(self, expression: Expression, false_jump_label: str):
+        if isinstance(expression, Operation2):
+            if expression.op in (
+                "==",
+                "!=",
+                "<",
+                "<=",
+                ">",
+                ">=",
+            ):
+                if expression.op == "<" or expression.op == "<=":
+                    left_reg = self.allocator.reg_alloc(RegisterType.B)  # TODO
+                    right_reg = self.allocator.reg_alloc(RegisterType.A)  # TODO
+                else:
+                    left_reg = self.allocator.reg_alloc(RegisterType.A)  # TODO
+                    right_reg = self.allocator.reg_alloc(RegisterType.B)  # TODO
+
+                left_name = self.allocator.reg_name(left_reg)
+                right_name = self.allocator.reg_name(right_reg)
+
+                if expression.op == "==":
+                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(f"\tjmp ne, {false_jump_label}")
+                elif expression.op == "!=":
+                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(f"\tjmp zr, {false_jump_label}")
+                elif expression.op == "<":
+                    self.emit(f"\tsub {right_name}, {left_name}, r0")
+                    self.emit(f"\tjmp zv, {false_jump_label}")
+                elif expression.op == "<=":
+                    self.emit(f"\tsub {right_name}, {left_name}, r0")
+                    self.emit(f"\tjmp nv, {false_jump_label}")
+                elif expression.op == ">":
+                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(f"\tjmp zv, {false_jump_label}")
+                elif expression.op == ">=":
+                    self.emit(f"\tsub {left_name}, {right_name}, r0")
+                    self.emit(f"\tjmp nv, {false_jump_label}")
+
+                self.allocator.reg_free(left_reg)
+                self.allocator.reg_free(right_reg)
+            else:
+                self.r.error(f"Operation '{expression.op}' is not supported.")
+                raise SystemExit(1)
+        elif isinstance(expression, Operation1):
+            self.r.error(f"Operation '{expression.op}' is not supported (yet).")  # TODO
+            raise SystemExit(1)
+
+    def gen_expression(
+        self,
+        expression: Expression,
+        target_register_type: RegisterType = RegisterType.A,
+    ) -> Register:
         if isinstance(expression, Number):
-            pass
+            reg = self.allocator.reg_alloc(target_register_type)
+            self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
+            return reg
 
         elif isinstance(expression, Name):
             pass
@@ -341,6 +455,9 @@ class CodeGenerator:
 
         self.emit("; ------ INTERRUPT VECTOR TABLE ------")
         for i in range(max(15, max(interrupt_map.keys())) + 1):
+            if i == 16:
+                self.emit("")
+                self.emit("; ------- SYSCALL VECTOR TABLE -------")
             if i in interrupt_map:
                 self.emit(f"\t#d16 {interrupt_map[i]} ; Vector {i}")
             else:
