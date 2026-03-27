@@ -24,6 +24,7 @@ from blim_parser import (
     Return,
     Statement,
     StructValue,
+    Type,
     Variable,
     While,
 )
@@ -182,6 +183,8 @@ class CodeGenerator:
         self.id_counter = 0
         self.loop_stack: list[int] = []
 
+        self.local_vars: dict[str, Symbol] = {}
+
     def emit(self, text: str = ""):
         self.lines.append(text)
 
@@ -189,14 +192,88 @@ class CodeGenerator:
         self.id_counter += 1
         return self.id_counter
 
+    def resolve_type_size(self, var_type: Type, current_package: str) -> int:
+        if isinstance(var_type.base_type, IntType):
+            return 1
+
+        elif isinstance(var_type.base_type, str):
+            struct_name = var_type.base_type
+            target_package = current_package
+            if "." in struct_name:
+                target_package, struct_name = struct_name.split(".", 1)
+
+            if target_package in self.project_ast:
+                for file_ast in self.project_ast[target_package]:
+                    for struct_def in file_ast.structures:
+                        if struct_def.name == struct_name:
+                            return sum(
+                                self.resolve_type_size(f.type, target_package)
+                                for f in struct_def.fields
+                            )
+
+            self.r.error(f"Unknown type: {var_type.base_type}")
+            raise SystemExit(1)
+
+        return 1
+
+    def compute_frame_layout(self, block: Block, package: str) -> int:
+        current_offset = 0
+
+        def traverse(statement: Statement):
+            nonlocal current_offset
+            if isinstance(statement, Block):
+                for s in statement.statements:
+                    traverse(s)
+            elif isinstance(statement, Variable):
+                size = self.resolve_type_size(statement.type, package)
+                current_offset -= size
+
+                sym_type = (
+                    SymbolType.STRUCT
+                    if isinstance(statement.type.base_type, str)
+                    else statement.type.base_type
+                )
+
+                self.local_vars[statement.name] = Symbol(
+                    name=statement.name,
+                    type=sym_type,
+                    range=SymbolRange.LOCAL,
+                    size=size,
+                    offset=current_offset,
+                )
+            elif isinstance(statement, If):
+                traverse(statement.then_block)
+                if statement.else_block:
+                    traverse(statement.else_block)
+            elif isinstance(statement, While):
+                traverse(statement.body)
+
+        traverse(block)
+        return abs(current_offset)
+
     # ---------------
 
     def gen_function(self, package: str, function: Function):
         self.id_counter = 0
-        self.emit(f"{package}__{function.name}:")
+        self.local_vars.clear()
+        total_local_size = self.compute_frame_layout(function.body, package)
 
+        self.emit(f"{package}__{function.name}:")
         self.emit("\tpush g3")
         self.emit("\tmov sp, g3")
+
+        if total_local_size > 0:
+            tmp_a = self.allocator.reg_alloc(RegisterType.A)
+            tmp_b = self.allocator.reg_alloc(RegisterType.B)
+
+            self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+            self.emit(f"\tmov {total_local_size}, {self.allocator.reg_name(tmp_b)}")
+            self.emit(
+                f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+            )
+
+            self.allocator.reg_free(tmp_a)
+            self.allocator.reg_free(tmp_b)
 
         self.gen_statement(function.body)
 
@@ -212,10 +289,61 @@ class CodeGenerator:
                 self.gen_statement(s)
 
         elif isinstance(statement, Variable):
-            pass
+            if statement.value:
+                value_reg = self.gen_expression(statement.value, RegisterType.B)
+                symbol = self.local_vars[statement.name]
+                base_reg = self.allocator.reg_alloc(RegisterType.A)
+                offset_reg = self.allocator.reg_alloc(RegisterType.B)
+
+                self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+
+                if symbol.offset == 0:
+                    self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
+                else:
+                    self.emit(
+                        f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
+                    )
+
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
+                )
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(base_reg)}]"
+                )
+
+                self.allocator.reg_free(value_reg)
+                self.allocator.reg_free(base_reg)
+                self.allocator.reg_free(offset_reg)
 
         elif isinstance(statement, Assign):
-            pass
+            if statement.value:
+                value_reg = self.gen_expression(statement.value, RegisterType.B)
+                target_expr = statement.targets[0]
+                if isinstance(target_expr, Name):
+                    symbol = self.local_vars[target_expr.value]
+                    base_reg = self.allocator.reg_alloc(RegisterType.A)
+                    offset_reg = self.allocator.reg_alloc(RegisterType.B)
+                    self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+                    if symbol.offset == 0:
+                        self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
+                    else:
+                        self.emit(
+                            f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
+                        )
+                    self.emit(
+                        f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
+                    )
+                    self.emit(
+                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(base_reg)}]"
+                    )
+                    self.allocator.reg_free(base_reg)
+                    self.allocator.reg_free(offset_reg)
+                else:
+                    self.r.error(
+                        "Assignments to complex structures (like arrays) are not yet supported."
+                    )
+                    raise SystemExit(1)
+                self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
             self.emit("\tjmp .return")
@@ -282,11 +410,11 @@ class CodeGenerator:
                 ">=",
             ):
                 if expression.op == "<" or expression.op == "<=":
-                    left_reg = self.allocator.reg_alloc(RegisterType.B)  # TODO
-                    right_reg = self.allocator.reg_alloc(RegisterType.A)  # TODO
+                    left_reg = self.gen_expression(expression.left, RegisterType.B)
+                    right_reg = self.gen_expression(expression.right, RegisterType.A)
                 else:
-                    left_reg = self.allocator.reg_alloc(RegisterType.A)  # TODO
-                    right_reg = self.allocator.reg_alloc(RegisterType.B)  # TODO
+                    left_reg = self.gen_expression(expression.left, RegisterType.A)
+                    right_reg = self.gen_expression(expression.right, RegisterType.B)
 
                 if expression.op == "==":
                     self.emit(
@@ -335,11 +463,46 @@ class CodeGenerator:
     ) -> Register:
         if isinstance(expression, Number):
             reg = self.allocator.reg_alloc(target_register_type)
-            self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
+            if expression.value == 0:
+                self.emit(f"\tmov r0, {self.allocator.reg_name(reg)}")
+            else:
+                self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
             return reg
 
         elif isinstance(expression, Name):
-            pass
+            var_name = expression.value
+
+            if var_name in self.local_vars:
+                symbol = self.local_vars[var_name]
+
+                base_reg = self.allocator.reg_alloc(RegisterType.A)
+                offset_reg = self.allocator.reg_alloc(RegisterType.B)
+
+                self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+
+                if symbol.offset == 0:
+                    self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
+                else:
+                    self.emit(
+                        f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
+                    )
+
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
+                )
+
+                target = self.allocator.reg_alloc(target_register_type)
+                self.emit(
+                    f"\tload [{self.allocator.reg_name(base_reg)}], {self.allocator.reg_name(target)}"
+                )
+
+                self.allocator.reg_free(base_reg)
+                self.allocator.reg_free(offset_reg)
+
+                return target
+            else:
+                self.r.error(f"Undefined variable '{var_name}'")
+                raise SystemExit(1)
 
         elif isinstance(expression, Operation1):
             pass
