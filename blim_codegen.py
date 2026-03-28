@@ -195,6 +195,33 @@ class CodeGenerator:
         self.id_counter += 1
         return self.id_counter
 
+    def adjust_sp(self, delta: int):
+        if delta == 0:
+            return
+
+        tmp_a = self.allocator.reg_alloc(RegisterType.A)
+        tmp_b = self.allocator.reg_alloc(RegisterType.B)
+
+        self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+        self.emit(f"\tmov {abs(delta)}, {self.allocator.reg_name(tmp_b)}")
+
+        if delta > 0:
+            self.emit(
+                f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+            )
+        else:
+            self.emit(
+                f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+            )
+
+        self.allocator.reg_free(tmp_a)
+        self.allocator.reg_free(tmp_b)
+
+    def unwind_stack_to(self, target_offset: int):
+        leak_size = target_offset - self.current_stack_offset
+        if leak_size > 0:
+            self.adjust_sp(leak_size)
+
     def resolve_type_size(self, var_type: Type, current_package: str) -> int:
         base_size = 1
 
@@ -322,6 +349,12 @@ class CodeGenerator:
 
             for s in statement.statements:
                 if isinstance(s, Variable):
+                    if s.name in self.scopes[-1]:
+                        self.r.error(
+                            f"Duplicate declaration of '{s.name}' in current scope."
+                        )
+                        raise SystemExit(1)
+
                     size = self.resolve_type_size(s.type, self.current_package)
                     start_offset -= size
 
@@ -341,34 +374,14 @@ class CodeGenerator:
                     block_local_size += size
 
             self.current_stack_offset -= block_local_size
-
-            if block_local_size > 0:
-                tmp_a = self.allocator.reg_alloc(RegisterType.A)
-                tmp_b = self.allocator.reg_alloc(RegisterType.B)
-                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-                self.emit(f"\tmov {block_local_size}, {self.allocator.reg_name(tmp_b)}")
-                self.emit(
-                    f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
-                )
-                self.allocator.reg_free(tmp_a)
-                self.allocator.reg_free(tmp_b)
+            self.adjust_sp(-block_local_size)
 
             for s in statement.statements:
                 self.gen_statement(s)
 
             self.scopes.pop()
-
-            if block_local_size > 0:
-                tmp_a = self.allocator.reg_alloc(RegisterType.A)
-                tmp_b = self.allocator.reg_alloc(RegisterType.B)
-                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-                self.emit(f"\tmov {block_local_size}, {self.allocator.reg_name(tmp_b)}")
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
-                )
-                self.current_stack_offset += block_local_size
-                self.allocator.reg_free(tmp_a)
-                self.allocator.reg_free(tmp_b)
+            self.adjust_sp(block_local_size)
+            self.current_stack_offset += block_local_size
 
         elif isinstance(statement, Variable):
             if statement.value:
@@ -466,19 +479,7 @@ class CodeGenerator:
                 self.r.error("Cannot 'break' outside of a loop.")
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
-            leak_size = loop_start_offset - self.current_stack_offset
-
-            if leak_size > 0:
-                tmp_a = self.allocator.reg_alloc(RegisterType.A)
-                tmp_b = self.allocator.reg_alloc(RegisterType.B)
-                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-                self.emit(f"\tmov {leak_size}, {self.allocator.reg_name(tmp_b)}")
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
-                )
-                self.allocator.reg_free(tmp_a)
-                self.allocator.reg_free(tmp_b)
-
+            self.unwind_stack_to(loop_start_offset)
             self.emit(f"\tjmp .while_end_{id}")
 
         elif isinstance(statement, Continue):
@@ -486,19 +487,7 @@ class CodeGenerator:
                 self.r.error("Cannot 'continue' outside of a loop.")
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
-            leak_size = loop_start_offset - self.current_stack_offset
-
-            if leak_size > 0:
-                tmp_a = self.allocator.reg_alloc(RegisterType.A)
-                tmp_b = self.allocator.reg_alloc(RegisterType.B)
-                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-                self.emit(f"\tmov {leak_size}, {self.allocator.reg_name(tmp_b)}")
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
-                )
-                self.allocator.reg_free(tmp_a)
-                self.allocator.reg_free(tmp_b)
-
+            self.unwind_stack_to(loop_start_offset)
             self.emit(f"\tjmp .while_start_{id}")
 
         elif isinstance(statement, ExprStatement):
