@@ -121,7 +121,24 @@ class RegisterAllocator:
             Register.SP: RegisterState.RESERVED,  # Stack pointer
             Register.PC: RegisterState.RESERVED,  # Program counter
         }
+        self.locked_regs: set[Register] = set()
         self.r = reporter
+
+    def reg_lock(self, register: Register):
+        if register in self.locked_regs:
+            return
+        if self.reg_state(register) != RegisterState.ALLOCATED:
+            self.r.error(f"Cannot lock {self.reg_name(register)} – not allocated.")
+            raise SystemExit(1)
+        self.locked_regs.add(register)
+
+    def reg_unlock_and_reset_states(self):
+        for reg in self.reg_states:
+            if reg in (Register.G3, Register.FL, Register.SP, Register.PC, Register.R0):
+                self.reg_states[reg] = RegisterState.RESERVED
+            else:
+                self.reg_states[reg] = RegisterState.FREE
+        self.locked_regs.clear()
 
     def reg_type(self, register: Register) -> RegisterType:
         if register in (Register.A0, Register.A1, Register.A2, Register.A3):
@@ -146,8 +163,19 @@ class RegisterAllocator:
         self.r.error(f"No free {reg_type.name.lower()} registers.")
         raise SystemExit(1)
 
+    def reg_alloc_specific(self, register: Register):
+        if self.reg_state(register) == RegisterState.FREE:
+            self.reg_states[register] = RegisterState.ALLOCATED
+            return
+        self.r.error(
+            f"Cannot allocate specific register {self.reg_name(register)} – it is already {self.reg_state(register).name}."
+        )
+        raise SystemExit(1)
+
     def reg_free(self, register: Register):
         if register == Register.R0:
+            return
+        if register in self.locked_regs:
             return
         if self.reg_state(register) == RegisterState.ALLOCATED:
             self.reg_states[register] = RegisterState.FREE
