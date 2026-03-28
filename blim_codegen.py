@@ -617,7 +617,6 @@ class CodeGenerator:
             pass
 
         elif isinstance(expression, Operation2):
-            target: Register
             basic_ops = {
                 "+": "add",
                 "-": "sub",
@@ -641,17 +640,21 @@ class CodeGenerator:
                 right_reg = self.gen_expression(expression.right, RegisterType.B)
                 if target_register_type == RegisterType.A:
                     target = left_reg
-                    self.allocator.reg_free(right_reg)
+                    to_free = [right_reg]
                 elif target_register_type == RegisterType.B:
                     target = right_reg
-                    self.allocator.reg_free(left_reg)
+                    to_free = [left_reg]
                 else:
                     target = self.allocator.reg_alloc(target_register_type)
-                    self.allocator.reg_free(left_reg)
-                    self.allocator.reg_free(right_reg)
+                    to_free = [left_reg, right_reg]
+
                 self.emit(
                     f"\t{basic_ops[expression.op]} {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(target)}"
                 )
+                for reg in to_free:
+                    if reg != target:
+                        self.allocator.reg_free(reg)
+
                 return target
             elif expression.op in shifts:
                 if not isinstance(expression.right, Number):
@@ -661,8 +664,8 @@ class CodeGenerator:
                     self.r.error("You can't shift by 16 bits or more.")
                     raise SystemExit(1)
                 if expression.right.value == 0:
-                    reg = self.gen_expression(expression.left, target_register_type)
-                    return reg
+                    return self.gen_expression(expression.left, target_register_type)
+
                 if target_register_type in (RegisterType.A, RegisterType.B):
                     reg = self.gen_expression(expression.left, target_register_type)
                     target = reg
@@ -703,6 +706,10 @@ class CodeGenerator:
                 if target != reg:
                     self.allocator.reg_free(reg)
                 return target
+
+            else:
+                self.r.error(f"Operation '{expression.op}' is not supported.")
+                raise SystemExit(1)
 
         elif isinstance(expression, Call):
             pass
