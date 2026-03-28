@@ -184,8 +184,9 @@ class CodeGenerator:
         self.id_counter = 0
         self.loop_stack: list[int] = []
 
-        self.local_vars: dict[str, Symbol] = {}
+        self.scopes: list[dict[str, Symbol]] = []
         self.current_package: str = ""
+        self.current_stack_offset: int = 0
 
     def emit(self, text: str = ""):
         self.lines.append(text)
@@ -257,50 +258,16 @@ class CodeGenerator:
         self.r.error(f"Unknown struct type: {struct_name}")
         raise SystemExit(1)
 
-    def compute_frame_layout(self, block: Block, package: str) -> int:
-        current_offset = 0
-
-        def traverse(statement: Statement):
-            nonlocal current_offset
-            if isinstance(statement, Block):
-                for s in statement.statements:
-                    traverse(s)
-            elif isinstance(statement, Variable):
-                size = self.resolve_type_size(statement.type, package)
-                current_offset -= size
-
-                sym_type = (
-                    statement.type.base_type
-                    if isinstance(statement.type.base_type, str)
-                    else statement.type.base_type
-                )
-
-                self.local_vars[statement.name] = Symbol(
-                    name=statement.name,
-                    type=sym_type,
-                    range=SymbolRange.LOCAL,
-                    size=size,
-                    offset=current_offset,
-                )
-            elif isinstance(statement, If):
-                traverse(statement.then_block)
-                if statement.else_block:
-                    traverse(statement.else_block)
-            elif isinstance(statement, While):
-                traverse(statement.body)
-
-        traverse(block)
-        return abs(current_offset)
+    def lookup_variable(self, name: str) -> Symbol:
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+        self.r.error(f"Undefined variable '{name}'")
+        raise SystemExit(1)
 
     def get_memory_offset(self, expression: Expression) -> int:
         if isinstance(expression, Name):
-            var_name = expression.value
-            if var_name in self.local_vars:
-                return self.local_vars[var_name].offset
-            else:
-                self.r.error(f"Undefined variable '{var_name}'")
-                raise SystemExit(1)
-
+            return self.lookup_variable(expression.value).offset
         elif (
             isinstance(expression, MemberAccess)
             and expression.type == MemberAccessType.FIELD
@@ -309,7 +276,7 @@ class CodeGenerator:
 
             if isinstance(expression.value, Name):
                 base_name = expression.value.value
-                symbol = self.local_vars[base_name]
+                symbol = self.lookup_variable(base_name)
                 if isinstance(symbol.type, str):
                     field_offset = self.get_struct_field_offset(
                         symbol.type, expression.member, self.current_package
@@ -329,27 +296,13 @@ class CodeGenerator:
 
     def gen_function(self, package: str, function: Function):
         self.id_counter = 0
-        self.local_vars.clear()
+        self.scopes.clear()
+        self.current_stack_offset = 0
         self.current_package = package
-
-        total_local_size = self.compute_frame_layout(function.body, package)
 
         self.emit(f"{package}__{function.name}:")
         self.emit("\tpush g3")
         self.emit("\tmov sp, g3")
-
-        if total_local_size > 0:
-            tmp_a = self.allocator.reg_alloc(RegisterType.A)
-            tmp_b = self.allocator.reg_alloc(RegisterType.B)
-
-            self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-            self.emit(f"\tmov {total_local_size}, {self.allocator.reg_name(tmp_b)}")
-            self.emit(
-                f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
-            )
-
-            self.allocator.reg_free(tmp_a)
-            self.allocator.reg_free(tmp_b)
 
         self.gen_statement(function.body)
 
@@ -361,13 +314,64 @@ class CodeGenerator:
 
     def gen_statement(self, statement: Statement):
         if isinstance(statement, Block):
+            self.scopes.append({})
+
+            block_local_size = 0
+            for s in statement.statements:
+                if isinstance(s, Variable):
+                    block_local_size += self.resolve_type_size(
+                        s.type, self.current_package
+                    )
+
+            if block_local_size > 0:
+                tmp_a = self.allocator.reg_alloc(RegisterType.A)
+                tmp_b = self.allocator.reg_alloc(RegisterType.B)
+                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+                self.emit(f"\tmov {block_local_size}, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                )
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+
             for s in statement.statements:
                 self.gen_statement(s)
 
+            self.scopes.pop()
+
+            if block_local_size > 0:
+                tmp_a = self.allocator.reg_alloc(RegisterType.A)
+                tmp_b = self.allocator.reg_alloc(RegisterType.B)
+                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+                self.emit(f"\tmov {block_local_size}, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                )
+                self.current_stack_offset += block_local_size
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+
         elif isinstance(statement, Variable):
+            size = self.resolve_type_size(statement.type, self.current_package)
+            self.current_stack_offset -= size
+
+            sym_type = (
+                statement.type.base_type
+                if isinstance(statement.type.base_type, str)
+                else statement.type.base_type
+            )
+
+            self.scopes[-1][statement.name] = Symbol(
+                name=statement.name,
+                type=sym_type,
+                range=SymbolRange.LOCAL,
+                size=size,
+                offset=self.current_stack_offset,
+            )
+
             if statement.value:
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
-                symbol = self.local_vars[statement.name]
+                symbol = self.scopes[-1][statement.name]
                 base_reg = self.allocator.reg_alloc(RegisterType.A)
                 offset_reg = self.allocator.reg_alloc(RegisterType.B)
 
