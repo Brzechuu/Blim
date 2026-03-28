@@ -317,11 +317,29 @@ class CodeGenerator:
             self.scopes.append({})
 
             block_local_size = 0
+            start_offset = self.current_stack_offset
+
             for s in statement.statements:
                 if isinstance(s, Variable):
-                    block_local_size += self.resolve_type_size(
-                        s.type, self.current_package
+                    size = self.resolve_type_size(s.type, self.current_package)
+                    start_offset -= size
+
+                    sym_type = (
+                        s.type.base_type
+                        if isinstance(s.type.base_type, str)
+                        else s.type.base_type
                     )
+
+                    self.scopes[-1][s.name] = Symbol(
+                        name=s.name,
+                        type=sym_type,
+                        range=SymbolRange.LOCAL,
+                        size=size,
+                        offset=start_offset,
+                    )
+                    block_local_size += size
+
+            self.current_stack_offset -= block_local_size
 
             if block_local_size > 0:
                 tmp_a = self.allocator.reg_alloc(RegisterType.A)
@@ -352,23 +370,6 @@ class CodeGenerator:
                 self.allocator.reg_free(tmp_b)
 
         elif isinstance(statement, Variable):
-            size = self.resolve_type_size(statement.type, self.current_package)
-            self.current_stack_offset -= size
-
-            sym_type = (
-                statement.type.base_type
-                if isinstance(statement.type.base_type, str)
-                else statement.type.base_type
-            )
-
-            self.scopes[-1][statement.name] = Symbol(
-                name=statement.name,
-                type=sym_type,
-                range=SymbolRange.LOCAL,
-                size=size,
-                offset=self.current_stack_offset,
-            )
-
             if statement.value:
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
                 symbol = self.scopes[-1][statement.name]
