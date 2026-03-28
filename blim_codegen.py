@@ -603,7 +603,32 @@ class CodeGenerator:
             return target
 
         elif isinstance(expression, Operation1):
-            pass
+            if expression.op == "!":
+                if target_register_type in (RegisterType.A, RegisterType.B):
+                    reg = self.gen_expression(expression.value, target_register_type)
+                else:
+                    reg = self.gen_expression(expression.value, RegisterType.A)
+
+                self.emit(
+                    f"\tnot {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                )
+                return reg
+
+            elif expression.op == "-":
+                value_reg = self.gen_expression(expression.value, RegisterType.B)
+                zero_reg = self.allocator.reg_alloc(RegisterType.A)
+
+                self.emit(f"\tmov r0, {self.allocator.reg_name(zero_reg)}")
+                self.emit(
+                    f"\tsub {self.allocator.reg_name(zero_reg)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(zero_reg)}"
+                )
+
+                self.allocator.reg_free(value_reg)
+                return zero_reg
+
+            else:
+                self.r.error(f"Operation '{expression.op}' is not supported.")
+                raise SystemExit(1)
 
         elif isinstance(expression, Operation2):
             basic_ops = {
