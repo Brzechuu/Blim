@@ -182,7 +182,7 @@ class CodeGenerator:
         self.r = reporter
         self.allocator = RegisterAllocator(reporter)
         self.id_counter = 0
-        self.loop_stack: list[int] = []
+        self.loop_stack: list[tuple[int, int]] = []
 
         self.scopes: list[dict[str, Symbol]] = []
         self.current_package: str = ""
@@ -206,6 +206,7 @@ class CodeGenerator:
             if "." in struct_name:
                 target_package, struct_name = struct_name.split(".", 1)
 
+            found_struct = False
             if target_package in self.project_ast:
                 for file_ast in self.project_ast[target_package]:
                     for struct_def in file_ast.structures:
@@ -214,11 +215,11 @@ class CodeGenerator:
                                 self.resolve_type_size(f.type, target_package)
                                 for f in struct_def.fields
                             )
+                            found_struct = True
                             break
-                    else:
-                        continue
-                    break
-            else:
+                    if found_struct:
+                        break
+            if not found_struct:
                 self.r.error(f"Unknown type: {var_type.base_type}")
                 raise SystemExit(1)
 
@@ -451,7 +452,7 @@ class CodeGenerator:
 
         elif isinstance(statement, While):
             id = self.statement_id()
-            self.loop_stack.append(id)
+            self.loop_stack.append((id, self.current_stack_offset))
             self.emit(f" .while_start_{id}:")
             self.gen_condition(statement.condition, false_jump_label=f".while_end_{id}")
             self.gen_statement(statement.body)
@@ -464,14 +465,40 @@ class CodeGenerator:
             if not self.loop_stack:
                 self.r.error("Cannot 'break' outside of a loop.")
                 raise SystemExit(1)
-            id = self.loop_stack[-1]
+            id, loop_start_offset = self.loop_stack[-1]
+            leak_size = loop_start_offset - self.current_stack_offset
+
+            if leak_size > 0:
+                tmp_a = self.allocator.reg_alloc(RegisterType.A)
+                tmp_b = self.allocator.reg_alloc(RegisterType.B)
+                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+                self.emit(f"\tmov {leak_size}, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                )
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+
             self.emit(f"\tjmp .while_end_{id}")
 
         elif isinstance(statement, Continue):
             if not self.loop_stack:
                 self.r.error("Cannot 'continue' outside of a loop.")
                 raise SystemExit(1)
-            id = self.loop_stack[-1]
+            id, loop_start_offset = self.loop_stack[-1]
+            leak_size = loop_start_offset - self.current_stack_offset
+
+            if leak_size > 0:
+                tmp_a = self.allocator.reg_alloc(RegisterType.A)
+                tmp_b = self.allocator.reg_alloc(RegisterType.B)
+                self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
+                self.emit(f"\tmov {leak_size}, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                )
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+
             self.emit(f"\tjmp .while_start_{id}")
 
         elif isinstance(statement, ExprStatement):
