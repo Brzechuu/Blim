@@ -491,7 +491,8 @@ class CodeGenerator:
             self.emit(f"\tjmp .while_start_{id}")
 
         elif isinstance(statement, ExprStatement):
-            pass
+            result_reg = self.gen_expression(statement.value)
+            self.allocator.reg_free(result_reg)
 
         elif isinstance(statement, Asm):
             for line in statement.lines:
@@ -572,7 +573,8 @@ class CodeGenerator:
                 isinstance(expression, MemberAccess)
                 and expression.type == MemberAccessType.PACKAGE
             ):
-                pass
+                self.r.error("Package member access is not supported (yet).")  # TODO
+                raise SystemExit(1)
 
             final_offset = self.get_memory_offset(expression)
 
@@ -726,16 +728,20 @@ class CodeGenerator:
                 raise SystemExit(1)
 
         elif isinstance(expression, Call):
-            pass
+            self.r.error("Call is not supported (yet).")  # TODO
+            raise SystemExit(1)
 
         elif isinstance(expression, Index):
-            pass
+            self.r.error("Index is not supported (yet).")  # TODO
+            raise SystemExit(1)
 
         elif isinstance(expression, ArrayValue):
-            pass
+            self.r.error("ArrayValue is not supported (yet).")  # TODO
+            raise SystemExit(1)
 
         elif isinstance(expression, StructValue):
-            pass
+            self.r.error("StructValue is not supported (yet).")  # TODO
+            raise SystemExit(1)
 
         return Register.R0
 
