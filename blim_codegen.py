@@ -485,7 +485,37 @@ class CodeGenerator:
         self.emit(
             f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(off_reg)}, {self.allocator.reg_name(base_reg)}"
         )
+        self.allocator.reg_free(off_reg)
+        return base_reg
 
+    def make_stack_address_flexible(
+        self,
+        offset: int,
+        avoid: set[Register] | None = None,
+    ) -> Register:
+        if avoid is None:
+            avoid = set()
+
+        base_reg = self.alloc_temp_register(
+            (RegisterType.G, RegisterType.B, RegisterType.A),
+            avoid=avoid,
+        )
+        off_reg = self.alloc_temp_register(
+            (RegisterType.G, RegisterType.B, RegisterType.A),
+            avoid=avoid | {base_reg},
+        )
+
+        self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+        if offset == 0:
+            self.emit(f"\tmov r0, {self.allocator.reg_name(off_reg)}")
+        else:
+            self.emit(f"\tmov {offset}, {self.allocator.reg_name(off_reg)}")
+
+        self.emit(
+            f"\tadd {self.allocator.reg_name(base_reg)}, "
+            f"{self.allocator.reg_name(off_reg)}, "
+            f"{self.allocator.reg_name(base_reg)}"
+        )
         self.allocator.reg_free(off_reg)
         return base_reg
 
@@ -493,6 +523,23 @@ class CodeGenerator:
         addr_reg = self.make_stack_address(offset, avoid={src_register})
         self.emit(
             f"\tstore {self.allocator.reg_name(src_register)}, [{self.allocator.reg_name(addr_reg)}]"
+        )
+        self.allocator.reg_free(addr_reg)
+
+    def store_register_to_stack_offset_avoiding(
+        self,
+        src_register: Register,
+        offset: int,
+        avoid: set[Register] | None = None,
+    ):
+        if avoid is None:
+            avoid = set()
+        addr_reg = self.make_stack_address_flexible(
+            offset, avoid=avoid | {src_register}
+        )
+        self.emit(
+            f"\tstore {self.allocator.reg_name(src_register)}, "
+            f"[{self.allocator.reg_name(addr_reg)}]"
         )
         self.allocator.reg_free(addr_reg)
 
@@ -763,6 +810,55 @@ class CodeGenerator:
 
     # ---------------
 
+    def emit_call(
+        self,
+        expression: Call,
+        target_package: str,
+        function: Function,
+    ) -> tuple[dict[Register, RegisterState], set[Register], list[Register]]:
+        if len(expression.args) != len(function.params):
+            self.r.error(
+                f"Function '{function.name}' expects {len(function.params)} arguments, got {len(expression.args)}."
+            )
+            raise SystemExit(1)
+
+        if len(function.params) > len(ARGUMENT_REGISTERS):
+            self.r.error(f"Function '{function.name}' has too many arguments.")
+            raise SystemExit(1)
+
+        saved_reg_states, saved_locked_regs = self.save_allocator_state()
+        spilled = self.spill_registers_for_call()
+
+        self.allocator.reg_unlock_and_reset_states()
+
+        for i, arg in enumerate(expression.args):
+            arg_type = self.get_expression_type(arg)
+            param_type = function.params[i].type
+
+            self.ensure_assignable(
+                target_type=param_type,
+                value_expr=arg,
+                value_type=arg_type,
+                context=f"argument {i} of call to '{function.name}'",
+            )
+
+            dst_reg = ARGUMENT_REGISTERS[i]
+            reg_type = self.allocator.reg_type(dst_reg)
+            tmp_reg = self.gen_expression(arg, reg_type)
+
+            if tmp_reg != dst_reg:
+                if self.allocator.reg_state(dst_reg) == RegisterState.FREE:
+                    self.allocator.reg_alloc_specific(dst_reg)
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(dst_reg)}"
+                )
+                self.allocator.reg_free(tmp_reg)
+
+            self.allocator.reg_lock(dst_reg)
+
+        self.emit(f"\tcall {target_package}__{function.name}")
+        return saved_reg_states, saved_locked_regs, spilled
+
     def gen_function(self, package: str, function: Function):
         self.id_counter = 0
         self.scopes.clear()
@@ -853,6 +949,61 @@ class CodeGenerator:
 
         self.allocator.reg_unlock_and_reset_states()
 
+    def gen_multi_result_assign(
+        self,
+        targets: list[Expression],
+        call: Call,
+    ):
+        target_package, function = self.lookup_function(call.value)
+
+        if len(function.results) == 0:
+            self.r.error(f"Function '{function.name}' does not return any values.")
+            raise SystemExit(1)
+
+        if len(function.results) == 1:
+            self.r.error(
+                f"Function '{function.name}' returns a single value; use a normal assignment instead."
+            )
+            raise SystemExit(1)
+
+        if len(targets) != len(function.results):
+            self.r.error(
+                f"Function '{function.name}' returns {len(function.results)} values, but assignment has {len(targets)} targets."
+            )
+            raise SystemExit(1)
+
+        for i, target_expr in enumerate(targets):
+            if not isinstance(target_expr, (Name, MemberAccess)):
+                self.r.error(
+                    "Assignments to complex structures are not supported (yet)."  # TODO
+                )
+                raise SystemExit(1)
+
+            target_type = self.get_expression_type(target_expr)
+            result_type = function.results[i].type
+            self.ensure_assignable(
+                target_type=target_type,
+                value_expr=call,
+                value_type=result_type,
+                context=f"assignment target {i} of call to '{function.name}'",
+            )
+
+        saved_reg_states, saved_locked_regs, spilled = self.emit_call(
+            call, target_package, function
+        )
+
+        live_result_regs: set[Register] = set(RESULT_REGISTERS[: len(function.results)])
+
+        for i, target_expr in enumerate(targets):
+            result_reg = RESULT_REGISTERS[i]
+            final_offset = self.get_memory_offset(target_expr)
+            self.store_register_to_stack_offset_avoiding(
+                result_reg, final_offset, avoid=live_result_regs
+            )
+
+        self.restore_registers_after_call(spilled)
+        self.restore_allocator_state(saved_reg_states, saved_locked_regs)
+
     def gen_statement(self, statement: Statement):
         if isinstance(statement, Block):
             self.scopes.append({})
@@ -907,28 +1058,47 @@ class CodeGenerator:
                 self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Assign):
-            if statement.value:
-                target_expr = statement.targets[0]
-                if isinstance(target_expr, (Name, MemberAccess)):
-                    target_type = self.get_expression_type(target_expr)
-                    value_type = self.get_expression_type(statement.value)
+            if statement.value is None:
+                return
 
-                    self.ensure_assignable(
-                        target_type=target_type,
-                        value_expr=statement.value,
-                        value_type=value_type,
-                        context="assignment",
-                    )
-
-                    value_reg = self.gen_expression(statement.value, RegisterType.B)
-                    final_offset = self.get_memory_offset(target_expr)
-                    self.store_register_to_stack_offset(value_reg, final_offset)
-                    self.allocator.reg_free(value_reg)
-                else:
+            if len(statement.targets) > 1:
+                if not isinstance(statement.value, Call):
                     self.r.error(
-                        "Assignments to complex structures are not supported (yet)."
+                        "Multiple assignment requires a function call on the right side."
                     )
                     raise SystemExit(1)
+                self.gen_multi_result_assign(statement.targets, statement.value)
+                return
+
+            target_expr = statement.targets[0]
+            if not isinstance(target_expr, (Name, MemberAccess)):
+                self.r.error(
+                    "Assignments to complex structures are not supported (yet)."  # TODO
+                )
+                raise SystemExit(1)
+
+            if isinstance(statement.value, Call):
+                _, function = self.lookup_function(statement.value.value)
+                if len(function.results) > 1:
+                    self.r.error(
+                        f"Function '{function.name}' returns multiple values; use the same number of assignment targets."
+                    )
+                    raise SystemExit(1)
+
+            target_type = self.get_expression_type(target_expr)
+            value_type = self.get_expression_type(statement.value)
+
+            self.ensure_assignable(
+                target_type=target_type,
+                value_expr=statement.value,
+                value_type=value_type,
+                context="assignment",
+            )
+
+            value_reg = self.gen_expression(statement.value, RegisterType.B)
+            final_offset = self.get_memory_offset(target_expr)
+            self.store_register_to_stack_offset(value_reg, final_offset)
+            self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
             self.emit("\tjmp .return")
@@ -1240,16 +1410,6 @@ class CodeGenerator:
         elif isinstance(expression, Call):
             target_package, function = self.lookup_function(expression.value)
 
-            if len(expression.args) != len(function.params):
-                self.r.error(
-                    f"Function '{function.name}' expects {len(function.params)} arguments, got {len(expression.args)}."
-                )
-                raise SystemExit(1)
-
-            if len(function.params) > len(ARGUMENT_REGISTERS):
-                self.r.error(f"Function '{function.name}' has too many arguments.")
-                raise SystemExit(1)
-
             if len(function.results) > 1:
                 self.r.error(
                     f"Function '{function.name}' returns multiple values, which are not supported in expressions (yet)."
@@ -1264,39 +1424,7 @@ class CodeGenerator:
                     saved_reg_states, target_register_type
                 )
 
-            spilled = self.spill_registers_for_call()
-
-            self.allocator.reg_unlock_and_reset_states()
-
-            used_arg_regs: list[Register] = []
-
-            for i, arg in enumerate(expression.args):
-                arg_type = self.get_expression_type(arg)
-                param_type = function.params[i].type
-
-                self.ensure_assignable(
-                    target_type=param_type,
-                    value_expr=arg,
-                    value_type=arg_type,
-                    context=f"argument {i} of call to '{function.name}'",
-                )
-
-                dst_reg = ARGUMENT_REGISTERS[i]
-                reg_type = self.allocator.reg_type(dst_reg)
-                tmp_reg = self.gen_expression(arg, reg_type)
-
-                if tmp_reg != dst_reg:
-                    if self.allocator.reg_state(dst_reg) == RegisterState.FREE:
-                        self.allocator.reg_alloc_specific(dst_reg)
-                    self.emit(
-                        f"\tmov {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(dst_reg)}"
-                    )
-                    self.allocator.reg_free(tmp_reg)
-
-                self.allocator.reg_lock(dst_reg)
-                used_arg_regs.append(dst_reg)
-
-            self.emit(f"\tcall {target_package}__{function.name}")
+            _, _, spilled = self.emit_call(expression, target_package, function)
 
             if result_target is not None:
                 abi_result_reg = RESULT_REGISTERS[0]
