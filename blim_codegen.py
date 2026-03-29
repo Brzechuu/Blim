@@ -132,6 +132,12 @@ class RegisterAllocator:
             raise SystemExit(1)
         self.locked_regs.add(register)
 
+    def reg_unlock(self, register: Register):
+        if register not in self.locked_regs:
+            self.r.error(f"Cannot unlock {self.reg_name(register)} – not locked.")
+            raise SystemExit(1)
+        self.locked_regs.remove(register)
+
     def reg_unlock_and_reset_states(self):
         for reg in self.reg_states:
             if reg in (Register.G3, Register.FL, Register.SP, Register.PC, Register.R0):
