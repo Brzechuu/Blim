@@ -80,6 +80,7 @@ class Symbol:
     offset: int = 0
     label: str | None = None
     fields: list["Symbol"] = field(default_factory=list)
+    register: Register | None = None
 
 
 ARGUMENT_REGISTERS = (
