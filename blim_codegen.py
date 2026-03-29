@@ -225,6 +225,23 @@ class CodeGenerator:
         self.id_counter += 1
         return self.id_counter
 
+    def type_name(self, var_type: Type) -> str:
+        if isinstance(var_type.base_type, str):
+            base = var_type.base_type
+        else:
+            base = var_type.base_type.name.lower()
+
+        if var_type.pointer_depth > 0:
+            base = "*" * var_type.pointer_depth + base
+
+        if var_type.array_size is not None:
+            if isinstance(var_type.array_size, Number):
+                base += f"[{var_type.array_size.value}]"
+            else:
+                base += "[]"
+
+        return base
+
     def is_array(self, var_type: Type) -> bool:
         return var_type.array_size is not None
 
@@ -233,6 +250,102 @@ class CodeGenerator:
 
     def is_pointer(self, var_type: Type) -> bool:
         return var_type.pointer_depth > 0
+
+    def same_array_size(self, a: Type, b: Type) -> bool:
+        if a.array_size is None and b.array_size is None:
+            return True
+        if a.array_size is None or b.array_size is None:
+            return False
+        if isinstance(a.array_size, Number) and isinstance(b.array_size, Number):
+            return a.array_size.value == b.array_size.value
+        return False
+
+    def same_type(self, a: Type, b: Type) -> bool:
+        return (
+            a.base_type == b.base_type
+            and a.pointer_depth == b.pointer_depth
+            and self.same_array_size(a, b)
+        )
+
+    def is_integer(self, var_type: Type) -> bool:
+        return (
+            isinstance(var_type.base_type, IntType)
+            and var_type.pointer_depth == 0
+            and var_type.array_size is None
+        )
+
+    def unify_int_types(
+        self,
+        left_expr: Expression,
+        left_type: Type,
+        right_expr: Expression,
+        right_type: Type,
+        context: str,
+    ) -> Type:
+        if not self.is_integer(left_type):
+            self.r.error(
+                f"Left operand of {context} must be an integer, got {self.type_name(left_type)}."
+            )
+            raise SystemExit(1)
+
+        if not self.is_integer(right_type):
+            self.r.error(
+                f"Right operand of {context} must be an integer, got {self.type_name(right_type)}."
+            )
+            raise SystemExit(1)
+
+        if left_type.base_type == right_type.base_type:
+            return left_type
+
+        if isinstance(left_expr, Number):
+            return right_type
+
+        if isinstance(right_expr, Number):
+            return left_type
+
+        self.r.error(
+            f"Type mismatch in {context}: {self.type_name(left_type)} vs {self.type_name(right_type)}."
+        )
+        raise SystemExit(1)
+
+    def ensure_assignable(
+        self,
+        target_type: Type,
+        value_expr: Expression,
+        value_type: Type,
+        context: str,
+    ):
+        if self.is_array(target_type):
+            self.r.error(f"{self.type_name(target_type)} target cannot be an array.")
+            raise SystemExit(1)
+
+        if self.is_struct(target_type):
+            self.r.error(
+                f"{self.type_name(target_type)} target cannot be a struct value."
+            )
+            raise SystemExit(1)
+
+        if self.is_array(value_type):
+            self.r.error(f"{self.type_name(value_type)} value cannot be an array.")
+            raise SystemExit(1)
+
+        if self.is_struct(value_type):
+            self.r.error(
+                f"{self.type_name(value_type)} value cannot be a struct value."
+            )
+            raise SystemExit(1)
+
+        if self.same_type(target_type, value_type):
+            return
+
+        if self.is_integer(target_type) and self.is_integer(value_type):
+            if isinstance(value_expr, Number):
+                return
+
+        self.r.error(
+            f"Type mismatch in {context}: cannot assign {self.type_name(value_type)} to {self.type_name(target_type)}."
+        )
+        raise SystemExit(1)
 
     def adjust_sp(self, delta: int):
         if delta == 0:
@@ -388,44 +501,93 @@ class CodeGenerator:
                 struct_name, expression.member, self.current_package
             )
 
-        if isinstance(expression, (Operation1, Operation2)):
-            inner_expr = getattr(expression, "value", getattr(expression, "left", None))
-            if inner_expr:
-                return self.get_expression_type(inner_expr)
+        if isinstance(expression, Operation1):
+            operand_type = self.get_expression_type(expression.value)
 
+            if expression.op in ("!", "-"):
+                if not self.is_integer(operand_type):
+                    self.r.error(
+                        f"Operand '{expression.op}' must be an integer, got {self.type_name(operand_type)}."
+                    )
+                    raise SystemExit(1)
+                return operand_type
+
+            self.r.error(f"Operation '{expression.op}' is not supported.")
+            raise SystemExit(1)
+
+        if isinstance(expression, Operation2):
+            left_type = self.get_expression_type(expression.left)
+            right_type = self.get_expression_type(expression.right)
+
+            if expression.op in ("+", "-", "&", "|", "^", "!&", "!|", "!^"):
+                return self.unify_int_types(
+                    expression.left,
+                    left_type,
+                    expression.right,
+                    right_type,
+                    f"'{expression.op}'",
+                )
+
+            if expression.op in ("<<", ">>", "<<<", ">>>", ">=>"):
+                if not self.is_integer(left_type):
+                    self.r.error(
+                        f"Left operand of '{expression.op}' must be an integer, got {self.type_name(left_type)}."
+                    )
+                    raise SystemExit(1)
+
+                if not isinstance(expression.right, Number):
+                    self.r.error("Dynamic shifts is not supported (yet).")  # TODO
+                    raise SystemExit(1)
+
+                return left_type
+
+            if expression.op in ("==", "!=", "<", "<=", ">", ">="):
+                self.unify_int_types(
+                    expression.left,
+                    left_type,
+                    expression.right,
+                    right_type,
+                    f"'{expression.op}'",
+                )
+                return Type(
+                    line=expression.line, column=expression.column, base_type=IntType.U8
+                )
         self.r.error("Unsupported expression for type resolution.")
         raise SystemExit(1)
 
     def get_memory_offset(self, expression: Expression) -> int:
         if isinstance(expression, Name):
             return self.lookup_variable(expression.value).offset
-        elif (
+
+        if (
             isinstance(expression, MemberAccess)
             and expression.type == MemberAccessType.FIELD
         ):
             base_offset = self.get_memory_offset(expression.value)
 
-            if isinstance(expression.value, Name):
-                base_name = expression.value.value
-                symbol = self.lookup_variable(base_name)
-                if self.is_struct(symbol.type):
-                    struct_name = symbol.type.base_type
-                    if isinstance(struct_name, str):
-                        field_offset = self.get_struct_field_offset(
-                            struct_name, expression.member, self.current_package
-                        )
-                        return base_offset + field_offset
-                    self.r.error(f"Variable '{base_name}' is not a struct")
-                    raise SystemExit(1)
-                else:
-                    self.r.error(f"Variable '{base_name}' is not a struct")
-                    raise SystemExit(1)
-            else:
+            if not isinstance(expression.value, Name):
                 self.r.error("Complex member access bases not supported (yet).")  # TODO
                 raise SystemExit(1)
-        else:
-            self.r.error("Invalid left value")
-            raise SystemExit(1)
+
+            base_name = expression.value.value
+            symbol = self.lookup_variable(base_name)
+
+            if not self.is_struct(symbol.type):
+                self.r.error(f"Variable '{base_name}' is not a struct")
+                raise SystemExit(1)
+
+            struct_name = symbol.type.base_type
+            if not isinstance(struct_name, str):
+                self.r.error("Invalid struct type encountered.")
+                raise SystemExit(1)
+
+            field_offset = self.get_struct_field_offset(
+                struct_name, expression.member, self.current_package
+            )
+            return base_offset + field_offset
+
+        self.r.error("Invalid left value")
+        raise SystemExit(1)
 
     # ---------------
 
@@ -487,22 +649,14 @@ class CodeGenerator:
         elif isinstance(statement, Variable):
             if statement.value:
                 symbol = self.scopes[-1][statement.name]
-                if self.is_array(symbol.type):
-                    self.r.error(f"Variable '{statement.name}' cannot be an array.")
-                    raise SystemExit(1)
-                if self.is_struct(symbol.type):
-                    self.r.error(
-                        f"Variable '{statement.name}' cannot be a struct value."
-                    )
-                    raise SystemExit(1)
-
                 value_type = self.get_expression_type(statement.value)
-                if self.is_array(value_type):
-                    self.r.error("Initializer cannot be an array.")
-                    raise SystemExit(1)
-                if self.is_struct(value_type):
-                    self.r.error("Initializer cannot be a struct value.")
-                    raise SystemExit(1)
+
+                self.ensure_assignable(
+                    target_type=symbol.type,
+                    value_expr=statement.value,
+                    value_type=value_type,
+                    context=f"initializer of '{statement.name}'",
+                )
 
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
                 base_reg = self.allocator.reg_alloc(RegisterType.A)
@@ -533,20 +687,14 @@ class CodeGenerator:
                 target_expr = statement.targets[0]
                 if isinstance(target_expr, (Name, MemberAccess)):
                     target_type = self.get_expression_type(target_expr)
-                    if self.is_array(target_type):
-                        self.r.error("Assignment target cannot be an array.")
-                        raise SystemExit(1)
-                    if self.is_struct(target_type):
-                        self.r.error("Assignment target cannot be a struct value.")
-                        raise SystemExit(1)
-
                     value_type = self.get_expression_type(statement.value)
-                    if self.is_array(value_type):
-                        self.r.error("Assigned value cannot be an array.")
-                        raise SystemExit(1)
-                    if self.is_struct(value_type):
-                        self.r.error("Assigned value cannot be a struct value.")
-                        raise SystemExit(1)
+
+                    self.ensure_assignable(
+                        target_type=target_type,
+                        value_expr=statement.value,
+                        value_type=value_type,
+                        context="assignment",
+                    )
 
                     value_reg = self.gen_expression(statement.value, RegisterType.B)
                     final_offset = self.get_memory_offset(target_expr)
@@ -633,61 +781,69 @@ class CodeGenerator:
                 self.emit(f"\t{line}")
 
     def gen_condition(self, expression: Expression, false_jump_label: str):
-        if isinstance(expression, Operation2):
-            if expression.op in (
-                "==",
-                "!=",
-                "<",
-                "<=",
-                ">",
-                ">=",
-            ):
-                if expression.op == "<" or expression.op == "<=":
-                    left_reg = self.gen_expression(expression.left, RegisterType.B)
-                    right_reg = self.gen_expression(expression.right, RegisterType.A)
-                else:
-                    left_reg = self.gen_expression(expression.left, RegisterType.A)
-                    right_reg = self.gen_expression(expression.right, RegisterType.B)
-
-                if expression.op == "==":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp ne, {false_jump_label}")
-                elif expression.op == "!=":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp zr, {false_jump_label}")
-                elif expression.op == "<":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp zv, {false_jump_label}")
-                elif expression.op == "<=":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp nv, {false_jump_label}")
-                elif expression.op == ">":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp zv, {false_jump_label}")
-                elif expression.op == ">=":
-                    self.emit(
-                        f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
-                    )
-                    self.emit(f"\tjmp nv, {false_jump_label}")
-
-                self.allocator.reg_free(left_reg)
-                self.allocator.reg_free(right_reg)
-            else:
-                self.r.error(f"Operation '{expression.op}' is not supported.")
-                raise SystemExit(1)
-        elif isinstance(expression, Operation1):
-            self.r.error(f"Operation '{expression.op}' is not supported (yet).")  # TODO
+        if not isinstance(expression, Operation2):
+            self.r.error("Condition must be a comparison operation.")
             raise SystemExit(1)
+
+        if expression.op not in ("==", "!=", "<", "<=", ">", ">="):
+            self.r.error(f"Operation '{expression.op}' is not supported in conditions.")
+            raise SystemExit(1)
+
+        left_type = self.get_expression_type(expression.left)
+        right_type = self.get_expression_type(expression.right)
+
+        cmp_type = self.unify_int_types(
+            expression.left,
+            left_type,
+            expression.right,
+            right_type,
+            f"condition '{expression.op}'",
+        )
+
+        if expression.op in ("<", "<="):
+            left_reg = self.gen_expression(expression.left, RegisterType.B)
+            right_reg = self.gen_expression(expression.right, RegisterType.A)
+            self.emit(
+                f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
+            )
+        else:
+            left_reg = self.gen_expression(expression.left, RegisterType.A)
+            right_reg = self.gen_expression(expression.right, RegisterType.B)
+            self.emit(
+                f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+            )
+
+        if expression.op == "==":
+            self.emit(f"\tjmp nz, {false_jump_label}")
+
+        elif expression.op == "!=":
+            self.emit(f"\tjmp zr, {false_jump_label}")
+
+        else:
+            base_type = cmp_type.base_type
+            if not isinstance(base_type, IntType):
+                self.r.error("Comparison type must be an integer type.")
+                raise SystemExit(1)
+
+            if base_type == IntType.I16:
+                false_jumps = {
+                    "<": "zv",
+                    "<=": "nv",
+                    ">": "zv",
+                    ">=": "nv",
+                }
+            else:
+                false_jumps = {
+                    "<": "zc",
+                    "<=": "cr",
+                    ">": "zc",
+                    ">=": "cr",
+                }
+
+            self.emit(f"\tjmp {false_jumps[expression.op]}, {false_jump_label}")
+
+        self.allocator.reg_free(left_reg)
+        self.allocator.reg_free(right_reg)
 
     def gen_expression(
         self,
@@ -712,10 +868,10 @@ class CodeGenerator:
 
             expr_type = self.get_expression_type(expression)
             if self.is_array(expr_type):
-                self.r.error("Expression cannot be an array.")
+                self.r.error(f"{self.type_name(expr_type)} cannot be an array.")
                 raise SystemExit(1)
             if self.is_struct(expr_type):
-                self.r.error("Expression cannot be a struct value.")
+                self.r.error(f"{self.type_name(expr_type)} cannot be a struct value.")
                 raise SystemExit(1)
 
             final_offset = self.get_memory_offset(expression)
@@ -748,6 +904,13 @@ class CodeGenerator:
 
         elif isinstance(expression, Operation1):
             if expression.op == "!":
+                value_type = self.get_expression_type(expression.value)
+                if not self.is_integer(value_type):
+                    self.r.error(
+                        f"Operand '!' must be an integer, got {self.type_name(value_type)}."
+                    )
+                    raise SystemExit(1)
+
                 if target_register_type in (RegisterType.A, RegisterType.B):
                     reg = self.gen_expression(expression.value, target_register_type)
                 else:
@@ -760,11 +923,10 @@ class CodeGenerator:
 
             elif expression.op == "-":
                 value_type = self.get_expression_type(expression.value)
-                if self.is_array(value_type):
-                    self.r.error("Operand '-' cannot be an array.")
-                    raise SystemExit(1)
-                if self.is_struct(value_type):
-                    self.r.error("Operand '-' cannot be a struct value.")
+                if not self.is_integer(value_type):
+                    self.r.error(
+                        f"Operand '-' must be an integer, got {self.type_name(value_type)}."
+                    )
                     raise SystemExit(1)
 
                 value_reg = self.gen_expression(expression.value, RegisterType.B)
@@ -801,29 +963,13 @@ class CodeGenerator:
                 ">=>": "sra",
             }
             if expression.op in basic_ops:
-                # TODO: optimization
-                left_type = self.get_expression_type(expression.left)
-                right_type = self.get_expression_type(expression.right)
-                if self.is_array(left_type):
-                    self.r.error(
-                        f"Left operand of '{expression.op}' cannot be an array."
-                    )
-                    raise SystemExit(1)
-                if self.is_struct(left_type):
-                    self.r.error(
-                        f"Left operand of '{expression.op}' cannot be a struct value."
-                    )
-                    raise SystemExit(1)
-                if self.is_array(right_type):
-                    self.r.error(
-                        f"Right operand of '{expression.op}' cannot be an array."
-                    )
-                    raise SystemExit(1)
-                if self.is_struct(right_type):
-                    self.r.error(
-                        f"Right operand of '{expression.op}' cannot be a struct value."
-                    )
-                    raise SystemExit(1)
+                self.unify_int_types(
+                    expression.left,
+                    self.get_expression_type(expression.left),
+                    expression.right,
+                    self.get_expression_type(expression.right),
+                    f"'{expression.op}'",
+                )
 
                 left_reg = self.gen_expression(expression.left, RegisterType.A)
                 right_reg = self.gen_expression(expression.right, RegisterType.B)
@@ -847,14 +993,9 @@ class CodeGenerator:
                 return target
             elif expression.op in shifts:
                 left_type = self.get_expression_type(expression.left)
-                if self.is_array(left_type):
+                if not self.is_integer(left_type):
                     self.r.error(
-                        f"Left operand of '{expression.op}' cannot be an array."
-                    )
-                    raise SystemExit(1)
-                if self.is_struct(left_type):
-                    self.r.error(
-                        f"Left operand of '{expression.op}' cannot be a struct value."
+                        f"Left operand of '{expression.op}' must be an integer, got {self.type_name(left_type)}."
                     )
                     raise SystemExit(1)
 
