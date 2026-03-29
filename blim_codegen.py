@@ -496,14 +496,8 @@ class CodeGenerator:
         if avoid is None:
             avoid = set()
 
-        base_reg = self.alloc_temp_register(
-            (RegisterType.G, RegisterType.B, RegisterType.A),
-            avoid=avoid,
-        )
-        off_reg = self.alloc_temp_register(
-            (RegisterType.G, RegisterType.B, RegisterType.A),
-            avoid=avoid | {base_reg},
-        )
+        base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
+        off_reg = self.alloc_temp_register((RegisterType.B,), avoid=avoid | {base_reg})
 
         self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
         if offset == 0:
