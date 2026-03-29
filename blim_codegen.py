@@ -274,6 +274,93 @@ class CodeGenerator:
             and var_type.array_size is None
         )
 
+    def registers_for_type(self, reg_type: RegisterType) -> tuple[Register, ...]:
+        if reg_type == RegisterType.A:
+            return (Register.A0, Register.A1, Register.A2, Register.A3)
+        if reg_type == RegisterType.B:
+            return (Register.B0, Register.B1, Register.B2, Register.B3)
+        if reg_type == RegisterType.G:
+            return (Register.G0, Register.G1, Register.G2, Register.G3)
+        return (Register.R0, Register.FL, Register.SP, Register.PC)
+
+    def alloc_temp_register(
+        self,
+        preferred_types: tuple[RegisterType, ...],
+        avoid: set[Register] | None = None,
+    ) -> Register:
+        if avoid is None:
+            avoid = set()
+
+        for reg_type in preferred_types:
+            for register in self.registers_for_type(reg_type):
+                if register in avoid:
+                    continue
+                if self.allocator.reg_state(register) == RegisterState.FREE:
+                    self.allocator.reg_alloc_specific(register)
+                    return register
+
+        pref = ", ".join(rt.name.lower() for rt in preferred_types)
+        self.r.error(f"No free temporary register available ({pref}).")
+        raise SystemExit(1)
+
+    def find_free_register_in_state(
+        self,
+        reg_states: dict[Register, RegisterState],
+        reg_type: RegisterType,
+    ) -> Register:
+        for register in self.registers_for_type(reg_type):
+            if reg_states[register] == RegisterState.FREE:
+                return register
+        self.r.error(
+            f"No free {reg_type.name.lower()} register available for call result."
+        )
+        raise SystemExit(1)
+
+    def save_allocator_state(
+        self,
+    ) -> tuple[dict[Register, RegisterState], set[Register]]:
+        return dict(self.allocator.reg_states), set(self.allocator.locked_regs)
+
+    def restore_allocator_state(
+        self,
+        reg_states: dict[Register, RegisterState],
+        locked_regs: set[Register],
+    ):
+        self.allocator.reg_states = dict(reg_states)
+        self.allocator.locked_regs = set(locked_regs)
+
+    def lookup_function(self, expression: Expression) -> tuple[str, Function]:
+        if isinstance(expression, Name):
+            func_name = expression.value
+            for file_ast in self.project_ast.get(self.current_package, []):
+                for function in file_ast.functions:
+                    if function.name == func_name:
+                        return self.current_package, function
+
+            self.r.error(f"Undefined function '{func_name}'.")
+            raise SystemExit(1)
+
+        if (
+            isinstance(expression, MemberAccess)
+            and expression.type == MemberAccessType.PACKAGE
+            and isinstance(expression.value, Name)
+        ):
+            target_package = expression.value.value
+            func_name = expression.member
+
+            for file_ast in self.project_ast.get(target_package, []):
+                for function in file_ast.functions:
+                    if function.name == func_name:
+                        return target_package, function
+
+            self.r.error(
+                f"Undefined function '{func_name}' in package '{target_package}'."
+            )
+            raise SystemExit(1)
+
+        self.r.error("Unsupported function call target.")
+        raise SystemExit(1)
+
     def unify_int_types(
         self,
         left_expr: Expression,
@@ -346,6 +433,75 @@ class CodeGenerator:
             f"Type mismatch in {context}: cannot assign {self.type_name(value_type)} to {self.type_name(target_type)}."
         )
         raise SystemExit(1)
+
+    def push_register(self, register: Register):
+        self.emit(f"\tpush {self.allocator.reg_name(register)}")
+
+    def pop_register(self, register: Register):
+        self.emit(f"\tpop {self.allocator.reg_name(register)}")
+
+    def spill_registers_for_call(self) -> list[Register]:
+        spilled: list[Register] = []
+        for reg in (
+            Register.A0,
+            Register.A1,
+            Register.A2,
+            Register.A3,
+            Register.B0,
+            Register.B1,
+            Register.B2,
+            Register.B3,
+            Register.G0,
+            Register.G1,
+            Register.G2,
+        ):
+            if self.allocator.reg_state(reg) == RegisterState.ALLOCATED:
+                spilled.append(reg)
+
+        for reg in spilled:
+            self.push_register(reg)
+
+        return spilled
+
+    def restore_registers_after_call(self, spilled: list[Register]):
+        for reg in reversed(spilled):
+            self.pop_register(reg)
+
+    def make_stack_address(
+        self, offset: int, avoid: set[Register] | None = None
+    ) -> Register:
+        if avoid is None:
+            avoid = set()
+
+        base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
+        off_reg = self.alloc_temp_register((RegisterType.B,), avoid=avoid | {base_reg})
+
+        self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+        if offset == 0:
+            self.emit(f"\tmov r0, {self.allocator.reg_name(off_reg)}")
+        else:
+            self.emit(f"\tmov {offset}, {self.allocator.reg_name(off_reg)}")
+
+        self.emit(
+            f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(off_reg)}, {self.allocator.reg_name(base_reg)}"
+        )
+
+        self.allocator.reg_free(off_reg)
+        return base_reg
+
+    def store_register_to_stack_offset(self, src_register: Register, offset: int):
+        addr_reg = self.make_stack_address(offset, avoid={src_register})
+        self.emit(
+            f"\tstore {self.allocator.reg_name(src_register)}, [{self.allocator.reg_name(addr_reg)}]"
+        )
+        self.allocator.reg_free(addr_reg)
+
+    def load_stack_offset_to_register(self, offset: int, dst_register: Register):
+        addr_reg = self.make_stack_address(offset, avoid={dst_register})
+        self.emit(
+            f"\tload [{self.allocator.reg_name(addr_reg)}], {self.allocator.reg_name(dst_register)}"
+        )
+        self.allocator.reg_free(addr_reg)
 
     def adjust_sp(self, delta: int):
         if delta == 0:
@@ -552,6 +708,22 @@ class CodeGenerator:
                 return Type(
                     line=expression.line, column=expression.column, base_type=IntType.U8
                 )
+
+        if isinstance(expression, Call):
+            _, function = self.lookup_function(expression.value)
+
+            if len(function.results) == 0:
+                self.r.error(f"Function '{function.name}' does not return a value.")
+                raise SystemExit(1)
+
+            if len(function.results) > 1:
+                self.r.error(
+                    f"Function '{function.name}' returns multiple values, which are not supported in expressions (yet)."
+                )
+                raise SystemExit(1)
+
+            return function.results[0].type
+
         self.r.error("Unsupported expression for type resolution.")
         raise SystemExit(1)
 
@@ -596,18 +768,90 @@ class CodeGenerator:
         self.scopes.clear()
         self.current_stack_offset = 0
         self.current_package = package
+        self.allocator.reg_unlock_and_reset_states()
+
+        if len(function.params) > len(ARGUMENT_REGISTERS):
+            self.r.error(f"Function '{function.name}' has too many parameters.")
+            raise SystemExit(1)
+
+        if len(function.results) > len(RESULT_REGISTERS):
+            self.r.error(f"Function '{function.name}' has too many results.")
+            raise SystemExit(1)
 
         self.emit(f"{package}__{function.name}:")
         self.emit("\tpush g3")
         self.emit("\tmov sp, g3")
 
+        self.scopes.append({})
+        function_scope = self.scopes[-1]
+
+        frame_size = 0
+        start_offset = self.current_stack_offset
+
+        for param in function.params:
+            size = self.resolve_type_size(param.type, self.current_package)
+            if size != 1 or self.is_array(param.type) or self.is_struct(param.type):
+                self.r.error(
+                    f"Function parameter '{param.name}' must fit in one register."
+                )
+                raise SystemExit(1)
+
+            start_offset -= size
+            function_scope[param.name] = Symbol(
+                name=param.name,
+                type=param.type,
+                range=SymbolRange.PARAM,
+                size=size,
+                offset=start_offset,
+            )
+            frame_size += size
+
+        for result in function.results:
+            size = self.resolve_type_size(result.type, self.current_package)
+            if size != 1 or self.is_array(result.type) or self.is_struct(result.type):
+                self.r.error(
+                    f"Function result '{result.name}' must fit in one register."
+                )
+                raise SystemExit(1)
+
+            start_offset -= size
+            function_scope[result.name] = Symbol(
+                name=result.name,
+                type=result.type,
+                range=SymbolRange.RESULT,
+                size=size,
+                offset=start_offset,
+            )
+            frame_size += size
+
+        self.current_stack_offset -= frame_size
+        self.adjust_sp(-frame_size)
+
+        for i, param in enumerate(function.params):
+            src_reg = ARGUMENT_REGISTERS[i]
+            param_symbol = function_scope[param.name]
+            self.store_register_to_stack_offset(src_reg, param_symbol.offset)
+
         self.gen_statement(function.body)
 
         self.emit(" .return:")
+
+        for i, result in enumerate(function.results):
+            dst_reg = RESULT_REGISTERS[i]
+            if self.allocator.reg_state(dst_reg) == RegisterState.FREE:
+                self.allocator.reg_alloc_specific(dst_reg)
+
+            result_symbol = function_scope[result.name]
+            self.load_stack_offset_to_register(result_symbol.offset, dst_reg)
+
+        self.scopes.pop()
+
         self.emit("\tmov g3, sp")
         self.emit("\tpop g3")
         self.emit("\tret")
         self.emit()
+
+        self.allocator.reg_unlock_and_reset_states()
 
     def gen_statement(self, statement: Statement):
         if isinstance(statement, Block):
@@ -659,28 +903,8 @@ class CodeGenerator:
                 )
 
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
-                base_reg = self.allocator.reg_alloc(RegisterType.A)
-                offset_reg = self.allocator.reg_alloc(RegisterType.B)
-
-                self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
-
-                if symbol.offset == 0:
-                    self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
-                else:
-                    self.emit(
-                        f"\tmov {symbol.offset}, {self.allocator.reg_name(offset_reg)}"
-                    )
-
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
-                )
-                self.emit(
-                    f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(base_reg)}]"
-                )
-
+                self.store_register_to_stack_offset(value_reg, symbol.offset)
                 self.allocator.reg_free(value_reg)
-                self.allocator.reg_free(base_reg)
-                self.allocator.reg_free(offset_reg)
 
         elif isinstance(statement, Assign):
             if statement.value:
@@ -698,24 +922,7 @@ class CodeGenerator:
 
                     value_reg = self.gen_expression(statement.value, RegisterType.B)
                     final_offset = self.get_memory_offset(target_expr)
-
-                    base_reg = self.allocator.reg_alloc(RegisterType.A)
-                    offset_reg = self.allocator.reg_alloc(RegisterType.B)
-                    self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
-                    if final_offset == 0:
-                        self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
-                    else:
-                        self.emit(
-                            f"\tmov {final_offset}, {self.allocator.reg_name(offset_reg)}"
-                        )
-                    self.emit(
-                        f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
-                    )
-                    self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(base_reg)}]"
-                    )
-                    self.allocator.reg_free(base_reg)
-                    self.allocator.reg_free(offset_reg)
+                    self.store_register_to_stack_offset(value_reg, final_offset)
                     self.allocator.reg_free(value_reg)
                 else:
                     self.r.error(
@@ -875,31 +1082,8 @@ class CodeGenerator:
                 raise SystemExit(1)
 
             final_offset = self.get_memory_offset(expression)
-
-            base_reg = self.allocator.reg_alloc(RegisterType.A)
-            offset_reg = self.allocator.reg_alloc(RegisterType.B)
-
-            self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
-
-            if final_offset == 0:
-                self.emit(f"\tmov r0, {self.allocator.reg_name(offset_reg)}")
-            else:
-                self.emit(
-                    f"\tmov {final_offset}, {self.allocator.reg_name(offset_reg)}"
-                )
-
-            self.emit(
-                f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(base_reg)}"
-            )
-
             target = self.allocator.reg_alloc(target_register_type)
-            self.emit(
-                f"\tload [{self.allocator.reg_name(base_reg)}], {self.allocator.reg_name(target)}"
-            )
-
-            self.allocator.reg_free(base_reg)
-            self.allocator.reg_free(offset_reg)
-
+            self.load_stack_offset_to_register(final_offset, target)
             return target
 
         elif isinstance(expression, Operation1):
@@ -1054,8 +1238,82 @@ class CodeGenerator:
                 raise SystemExit(1)
 
         elif isinstance(expression, Call):
-            self.r.error("Call is not supported (yet).")  # TODO
-            raise SystemExit(1)
+            target_package, function = self.lookup_function(expression.value)
+
+            if len(expression.args) != len(function.params):
+                self.r.error(
+                    f"Function '{function.name}' expects {len(function.params)} arguments, got {len(expression.args)}."
+                )
+                raise SystemExit(1)
+
+            if len(function.params) > len(ARGUMENT_REGISTERS):
+                self.r.error(f"Function '{function.name}' has too many arguments.")
+                raise SystemExit(1)
+
+            if len(function.results) > 1:
+                self.r.error(
+                    f"Function '{function.name}' returns multiple values, which are not supported in expressions (yet)."
+                )  # TODO
+                raise SystemExit(1)
+
+            saved_reg_states, saved_locked_regs = self.save_allocator_state()
+            result_target: Register | None = None
+
+            if len(function.results) == 1:
+                result_target = self.find_free_register_in_state(
+                    saved_reg_states, target_register_type
+                )
+
+            spilled = self.spill_registers_for_call()
+
+            self.allocator.reg_unlock_and_reset_states()
+
+            used_arg_regs: list[Register] = []
+
+            for i, arg in enumerate(expression.args):
+                arg_type = self.get_expression_type(arg)
+                param_type = function.params[i].type
+
+                self.ensure_assignable(
+                    target_type=param_type,
+                    value_expr=arg,
+                    value_type=arg_type,
+                    context=f"argument {i} of call to '{function.name}'",
+                )
+
+                dst_reg = ARGUMENT_REGISTERS[i]
+                reg_type = self.allocator.reg_type(dst_reg)
+                tmp_reg = self.gen_expression(arg, reg_type)
+
+                if tmp_reg != dst_reg:
+                    if self.allocator.reg_state(dst_reg) == RegisterState.FREE:
+                        self.allocator.reg_alloc_specific(dst_reg)
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(dst_reg)}"
+                    )
+                    self.allocator.reg_free(tmp_reg)
+
+                self.allocator.reg_lock(dst_reg)
+                used_arg_regs.append(dst_reg)
+
+            self.emit(f"\tcall {target_package}__{function.name}")
+
+            if result_target is not None:
+                abi_result_reg = RESULT_REGISTERS[0]
+                if result_target != abi_result_reg:
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(abi_result_reg)}, {self.allocator.reg_name(result_target)}"
+                    )
+
+            self.restore_registers_after_call(spilled)
+            self.restore_allocator_state(saved_reg_states, saved_locked_regs)
+
+            if result_target is None:
+                return Register.R0
+
+            self.allocator.reg_states[result_target] = RegisterState.ALLOCATED
+            self.allocator.locked_regs.discard(result_target)
+            return result_target
 
         elif isinstance(expression, Index):
             self.r.error("Index is not supported (yet).")  # TODO
