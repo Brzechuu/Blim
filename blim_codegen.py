@@ -64,6 +64,12 @@ class RegisterType(Enum):
     SPECIAL = auto()
 
 
+@dataclass
+class MemAddress:
+    register: Register | None = None
+    label: str | None = None
+
+
 class SymbolRange(Enum):
     GLOBAL = auto()
     LOCAL = auto()
@@ -217,6 +223,7 @@ class CodeGenerator:
         self.scopes: list[dict[str, Symbol]] = []
         self.current_package: str = ""
         self.current_stack_offset: int = 0
+        self.package_globals: dict[str, dict[str, Symbol]] = {}
 
     def emit(self, text: str = ""):
         self.lines.append(text)
@@ -511,38 +518,8 @@ class CodeGenerator:
             f"{self.allocator.reg_name(base_reg)}"
         )
         self.allocator.reg_free(off_reg)
+
         return base_reg
-
-    def store_register_to_stack_offset(self, src_register: Register, offset: int):
-        addr_reg = self.make_stack_address(offset, avoid={src_register})
-        self.emit(
-            f"\tstore {self.allocator.reg_name(src_register)}, [{self.allocator.reg_name(addr_reg)}]"
-        )
-        self.allocator.reg_free(addr_reg)
-
-    def store_register_to_stack_offset_avoiding(
-        self,
-        src_register: Register,
-        offset: int,
-        avoid: set[Register] | None = None,
-    ):
-        if avoid is None:
-            avoid = set()
-        addr_reg = self.make_stack_address_flexible(
-            offset, avoid=avoid | {src_register}
-        )
-        self.emit(
-            f"\tstore {self.allocator.reg_name(src_register)}, "
-            f"[{self.allocator.reg_name(addr_reg)}]"
-        )
-        self.allocator.reg_free(addr_reg)
-
-    def load_stack_offset_to_register(self, offset: int, dst_register: Register):
-        addr_reg = self.make_stack_address(offset, avoid={dst_register})
-        self.emit(
-            f"\tload [{self.allocator.reg_name(addr_reg)}], {self.allocator.reg_name(dst_register)}"
-        )
-        self.allocator.reg_free(addr_reg)
 
     def adjust_sp(self, delta: int):
         if delta == 0:
@@ -768,15 +745,29 @@ class CodeGenerator:
         self.r.error("Unsupported expression for type resolution.")
         raise SystemExit(1)
 
-    def get_memory_offset(self, expression: Expression) -> int:
-        if isinstance(expression, Name):
-            return self.lookup_variable(expression.value).offset
+    def gen_address(
+        self, expression: Expression, avoid: set[Register] | None = None
+    ) -> MemAddress:
+        if avoid is None:
+            avoid = set()
 
-        if (
+        if isinstance(expression, Name):
+            symbol = self.lookup_variable(expression.value)
+
+            if symbol.range == SymbolRange.GLOBAL:
+                if not symbol.label:
+                    self.r.error(f"Global symbol '{symbol.name}' has no label.")
+                    raise SystemExit(1)
+                return MemAddress(label=symbol.label)
+            else:
+                reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
+                return MemAddress(register=reg)
+
+        elif (
             isinstance(expression, MemberAccess)
             and expression.type == MemberAccessType.FIELD
         ):
-            base_offset = self.get_memory_offset(expression.value)
+            base_addr = self.gen_address(expression.value, avoid=avoid)
 
             if not isinstance(expression.value, Name):
                 self.r.error("Complex member access bases not supported (yet).")  # TODO
@@ -797,7 +788,41 @@ class CodeGenerator:
             field_offset = self.get_struct_field_offset(
                 struct_name, expression.member, self.current_package
             )
-            return base_offset + field_offset
+
+            if field_offset == 0:
+                return base_addr
+
+            if base_addr.label is not None:
+                return MemAddress(label=f"({base_addr.label} + {field_offset})")
+
+            if base_addr.register is None:
+                self.r.error("Base address must have a register if it has no label.")
+                raise SystemExit(1)
+            base_addr_reg = base_addr.register
+            avoid_with_base = set(avoid)
+            avoid_with_base.add(base_addr_reg)
+
+            offset_reg = self.alloc_temp_register(
+                (RegisterType.B,), avoid=avoid_with_base
+            )
+
+            target_reg = base_addr_reg
+            if self.allocator.reg_type(base_addr_reg) != RegisterType.A:
+                target_reg = self.alloc_temp_register(
+                    (RegisterType.A,), avoid=avoid_with_base
+                )
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(base_addr_reg)}, {self.allocator.reg_name(target_reg)}"
+                )
+                self.allocator.reg_free(base_addr_reg)
+
+            self.emit(f"\tmov {field_offset}, {self.allocator.reg_name(offset_reg)}")
+            self.emit(
+                f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+            )
+
+            self.allocator.reg_free(offset_reg)
+            return MemAddress(register=target_reg)
 
         self.r.error("Invalid left value")
         raise SystemExit(1)
@@ -833,7 +858,7 @@ class CodeGenerator:
                 target_type=param_type,
                 value_expr=arg,
                 value_type=arg_type,
-                context=f"argument {i} of call to '{function.name}'",
+                context=f"argument {i + 1} of call to '{function.name}'",
             )
 
             dst_reg = ARGUMENT_REGISTERS[i]
@@ -850,7 +875,8 @@ class CodeGenerator:
 
             self.allocator.reg_lock(dst_reg)
 
-        self.emit(f"\tcall {target_package}__{function.name}")
+        self.emit(f"\tcall _fun__{target_package}__{function.name}")
+
         return saved_reg_states, saved_locked_regs, spilled
 
     def gen_function(self, package: str, function: Function):
@@ -868,12 +894,13 @@ class CodeGenerator:
             self.r.error(f"Function '{function.name}' has too many results.")
             raise SystemExit(1)
 
-        self.emit(f"{package}__{function.name}:")
+        self.emit(f"_fun__{package}__{function.name}:")
         self.emit("\tpush g3")
         self.emit("\tmov sp, g3")
 
-        self.scopes.append({})
-        function_scope = self.scopes[-1]
+        function_scope: dict[str, Symbol] = {}
+        function_scope.update(self.package_globals.get(package, {}))
+        self.scopes.append(function_scope)
 
         frame_size = 0
         start_offset = self.current_stack_offset
@@ -920,7 +947,14 @@ class CodeGenerator:
         for i, param in enumerate(function.params):
             src_reg = ARGUMENT_REGISTERS[i]
             param_symbol = function_scope[param.name]
-            self.store_register_to_stack_offset(src_reg, param_symbol.offset)
+
+            addr_reg = self.make_stack_address_flexible(
+                param_symbol.offset, avoid={src_reg}
+            )
+            self.emit(
+                f"\tstore {self.allocator.reg_name(src_reg)}, [{self.allocator.reg_name(addr_reg)}]"
+            )
+            self.allocator.reg_free(addr_reg)
 
         self.gen_statement(function.body)
 
@@ -932,10 +966,16 @@ class CodeGenerator:
                 self.allocator.reg_alloc_specific(dst_reg)
 
             result_symbol = function_scope[result.name]
-            self.load_stack_offset_to_register(result_symbol.offset, dst_reg)
+
+            addr_reg = self.make_stack_address_flexible(
+                result_symbol.offset, avoid={dst_reg}
+            )
+            self.emit(
+                f"\tload [{self.allocator.reg_name(addr_reg)}], {self.allocator.reg_name(dst_reg)}"
+            )
+            self.allocator.reg_free(addr_reg)
 
         self.scopes.pop()
-
         self.emit("\tmov g3, sp")
         self.emit("\tpop g3")
         self.emit("\tret")
@@ -990,10 +1030,17 @@ class CodeGenerator:
 
         for i, target_expr in enumerate(targets):
             result_reg = RESULT_REGISTERS[i]
-            final_offset = self.get_memory_offset(target_expr)
-            self.store_register_to_stack_offset_avoiding(
-                result_reg, final_offset, avoid=live_result_regs
-            )
+            addr = self.gen_address(target_expr, avoid=live_result_regs)
+            if addr.label is not None:
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(result_reg)}, {addr.label}"
+                )
+            else:
+                assert addr.register is not None
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(result_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                )
+                self.allocator.reg_free(addr.register)
 
         self.restore_registers_after_call(spilled)
         self.restore_allocator_state(saved_reg_states, saved_locked_regs)
@@ -1048,7 +1095,17 @@ class CodeGenerator:
                 )
 
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
-                self.store_register_to_stack_offset(value_reg, symbol.offset)
+                addr = self.gen_address(Name(0, 0, statement.name), avoid={value_reg})
+                if addr.label is not None:
+                    self.emit(
+                        f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
+                    )
+                else:
+                    assert addr.register is not None
+                    self.emit(
+                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                    )
+                    self.allocator.reg_free(addr.register)
                 self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Assign):
@@ -1090,8 +1147,17 @@ class CodeGenerator:
             )
 
             value_reg = self.gen_expression(statement.value, RegisterType.B)
-            final_offset = self.get_memory_offset(target_expr)
-            self.store_register_to_stack_offset(value_reg, final_offset)
+            addr = self.gen_address(target_expr, avoid={value_reg})
+            if addr.label is not None:
+                self.emit(f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}")
+            elif addr.register is not None:
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                )
+                self.allocator.reg_free(addr.register)
+            else:
+                self.r.error("Invalid memory address.")
+                raise SystemExit(1)
             self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
@@ -1245,9 +1311,16 @@ class CodeGenerator:
                 self.r.error(f"{self.type_name(expr_type)} cannot be a struct value.")
                 raise SystemExit(1)
 
-            final_offset = self.get_memory_offset(expression)
+            addr = self.gen_address(expression)
             target = self.allocator.reg_alloc(target_register_type)
-            self.load_stack_offset_to_register(final_offset, target)
+            if addr.label is not None:
+                self.emit(f"\tload [{addr.label}], {self.allocator.reg_name(target)}")
+            else:
+                assert addr.register is not None
+                self.emit(
+                    f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(target)}"
+                )
+                self.allocator.reg_free(addr.register)
             return target
 
         elif isinstance(expression, Operation1):
@@ -1463,7 +1536,7 @@ class CodeGenerator:
             for file_ast in files_ast:
                 for vec in file_ast.interrupt_vectors:
                     interrupt_map[vec.vector_number] = (
-                        f"{file_ast.package}__{vec.func_name}"
+                        f"_fun__{file_ast.package}__{vec.func_name}"
                     )
 
         if 0 not in interrupt_map:
@@ -1483,6 +1556,45 @@ class CodeGenerator:
 
         self.emit("unhandled:")
         self.emit("\tret")
+        self.emit()
+
+        self.package_globals = {}
+        self.emit("; -------------- GLOBAL --------------")
+        for package, files_ast in self.project_ast.items():
+            globals_map: dict[str, Symbol] = {}
+            self.package_globals[package] = globals_map
+            for file_ast in files_ast:
+                for global_var in file_ast.global_variables:
+                    if global_var.name in globals_map:
+                        self.r.error(
+                            f"Duplicate global variable '{global_var.name}' in package '{package}'."
+                        )
+                        raise SystemExit(1)
+
+                    size = self.resolve_type_size(global_var.type, package)
+                    label = f"_global__{package}__{global_var.name}"
+
+                    globals_map[global_var.name] = Symbol(
+                        name=global_var.name,
+                        type=global_var.type,
+                        range=SymbolRange.GLOBAL,
+                        size=size,
+                        label=label,
+                    )
+
+                    self.emit(f"{label}:")
+                    if global_var.value and isinstance(global_var.value, Number):
+                        self.emit(f"\t#d16 {global_var.value.value}")
+                        for _ in range(1, size):
+                            self.emit("\t#d16 0")
+                    elif global_var.value:
+                        self.r.error(
+                            f"Global initializer for '{global_var.name}' must be a constant number."
+                        )
+                        raise SystemExit(1)
+                    else:
+                        for _ in range(size):
+                            self.emit("\t#d16 0")
         self.emit()
 
         self.emit("; --------------- CODE ---------------")
