@@ -526,6 +526,10 @@ class Parser:
         elif token.type == TokenType.IDENTIFIER:
             self.pos += 1
             base_type = token.value
+
+            if self.match(TokenType.DOT):
+                member_token = self.expect(TokenType.IDENTIFIER)
+                base_type = f"{base_type}.{member_token.value}"
         else:
             self.r.error(
                 f"Expected TYPE, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"

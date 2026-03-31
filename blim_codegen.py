@@ -651,29 +651,35 @@ class CodeGenerator:
         if isinstance(expression, Name):
             return self.lookup_variable(expression.value).type
 
-        if (
-            isinstance(expression, MemberAccess)
-            and expression.type == MemberAccessType.FIELD
-        ):
-            if not isinstance(expression.value, Name):
-                self.r.error("Complex member access bases not supported (yet).")  # TODO
-                raise SystemExit(1)
+        if isinstance(expression, MemberAccess):
+            if expression.type == MemberAccessType.PACKAGE:
+                if not isinstance(expression.value, Name):
+                    self.r.error("Package name must be an identifier.")
+                    raise SystemExit(1)
+                pkg_name = expression.value.value
+                var_name = expression.member
 
-            base_symbol = self.lookup_variable(expression.value.value)
-            base_type = base_symbol.type
+                pkg_globals = self.package_globals.get(pkg_name)
+                if not pkg_globals or var_name not in pkg_globals:
+                    self.r.error(f"Global variable '{pkg_name}.{var_name}' not found.")
+                    raise SystemExit(1)
+                return pkg_globals[var_name].type
 
-            if not self.is_struct(base_type):
-                self.r.error(f"Variable '{expression.value.value}' is not a struct")
-                raise SystemExit(1)
+            elif expression.type == MemberAccessType.FIELD:
+                base_type = self.get_expression_type(expression.value)
+                if base_type.pointer_depth > 0:
+                    self.r.error(
+                        "Pointer auto-dereference is not supported. Use '(*ptr).field'."
+                    )
+                    raise SystemExit(1)
 
-            struct_name = base_type.base_type
-            if not isinstance(struct_name, str):
-                self.r.error("Invalid struct type encountered.")
-                raise SystemExit(1)
+                if not isinstance(base_type.base_type, str):
+                    self.r.error("Base expression is not a struct.")
+                    raise SystemExit(1)
 
-            return self.get_struct_field_type(
-                struct_name, expression.member, self.current_package
-            )
+                return self.get_struct_field_type(
+                    base_type.base_type, expression.member, self.current_package
+                )
 
         if isinstance(expression, Operation1):
             if expression.op == "&":
@@ -934,66 +940,87 @@ class CodeGenerator:
                 self.allocator.reg_free(offset_reg)
                 return MemAddress(register=target_reg)
 
-        elif (
-            isinstance(expression, MemberAccess)
-            and expression.type == MemberAccessType.FIELD
-        ):
-            base_addr = self.gen_address(expression.value, avoid=avoid)
+        elif isinstance(expression, MemberAccess):
+            if expression.type == MemberAccessType.PACKAGE:
+                if not isinstance(expression.value, Name):
+                    self.r.error("Package name must be an identifier.")
+                    raise SystemExit(1)
 
-            if not isinstance(expression.value, Name):
-                self.r.error("Complex member access bases not supported (yet).")  # TODO
-                raise SystemExit(1)
+                pkg_name = expression.value.value
+                var_name = expression.member
 
-            base_name = expression.value.value
-            symbol = self.lookup_variable(base_name)
+                pkg_globals = self.package_globals.get(pkg_name)
+                if not pkg_globals:
+                    self.r.error(f"Package '{pkg_name}' not found.")
+                    raise SystemExit(1)
 
-            if not self.is_struct(symbol.type):
-                self.r.error(f"Variable '{base_name}' is not a struct")
-                raise SystemExit(1)
+                if var_name not in pkg_globals:
+                    self.r.error(f"Global variable '{pkg_name}.{var_name}' not found.")
+                    raise SystemExit(1)
 
-            struct_name = symbol.type.base_type
-            if not isinstance(struct_name, str):
-                self.r.error("Invalid struct type encountered.")
-                raise SystemExit(1)
+                symbol = pkg_globals[var_name]
+                if not symbol.label:
+                    self.r.error(f"Global symbol '{symbol.name}' has no label.")
+                    raise SystemExit(1)
+                return MemAddress(label=symbol.label)
 
-            field_offset = self.get_struct_field_offset(
-                struct_name, expression.member, self.current_package
-            )
+            elif expression.type == MemberAccessType.FIELD:
+                base_addr = self.gen_address(expression.value, avoid=avoid)
+                base_type = self.get_expression_type(expression.value)
 
-            if field_offset == 0:
-                return base_addr
+                if (
+                    not isinstance(base_type.base_type, str)
+                    or base_type.pointer_depth > 0
+                ):
+                    self.r.error("Base expression is not a struct.")
+                    raise SystemExit(1)
 
-            if base_addr.label is not None:
-                return MemAddress(label=f"({base_addr.label} + {field_offset})")
+                struct_name = base_type.base_type
+                field_offset = self.get_struct_field_offset(
+                    struct_name, expression.member, self.current_package
+                )
 
-            if base_addr.register is None:
-                self.r.error("Base address must have a register if it has no label.")
-                raise SystemExit(1)
-            base_addr_reg = base_addr.register
-            avoid_with_base = set(avoid)
-            avoid_with_base.add(base_addr_reg)
+                if field_offset == 0:
+                    return base_addr
 
-            offset_reg = self.alloc_temp_register(
-                (RegisterType.B,), avoid=avoid_with_base
-            )
+                if base_addr.label is not None:
+                    return MemAddress(label=f"({base_addr.label} + {field_offset})")
 
-            target_reg = base_addr_reg
-            if self.allocator.reg_type(base_addr_reg) != RegisterType.A:
-                target_reg = self.alloc_temp_register(
-                    (RegisterType.A,), avoid=avoid_with_base
+                if base_addr.register is None:
+                    self.r.error(
+                        "Base address must have a register if it has no label."
+                    )
+                    raise SystemExit(1)
+
+                base_addr_reg = base_addr.register
+                avoid_with_base = set(avoid)
+                avoid_with_base.add(base_addr_reg)
+
+                offset_reg = self.alloc_temp_register(
+                    (RegisterType.B,), avoid=avoid_with_base
+                )
+
+                target_reg = base_addr_reg
+                if self.allocator.reg_type(base_addr_reg) != RegisterType.A:
+                    target_reg = self.alloc_temp_register(
+                        (RegisterType.A,), avoid=avoid_with_base
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(base_addr_reg)}, {self.allocator.reg_name(target_reg)}"
+                    )
+                    self.allocator.reg_free(base_addr_reg)
+
+                self.emit(
+                    f"\tmov {field_offset}, {self.allocator.reg_name(offset_reg)}"
                 )
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(base_addr_reg)}, {self.allocator.reg_name(target_reg)}"
+                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
                 )
-                self.allocator.reg_free(base_addr_reg)
+                self.allocator.reg_free(offset_reg)
+                return MemAddress(register=target_reg)
 
-            self.emit(f"\tmov {field_offset}, {self.allocator.reg_name(offset_reg)}")
-            self.emit(
-                f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
-            )
-
-            self.allocator.reg_free(offset_reg)
-            return MemAddress(register=target_reg)
+            self.r.error("Invalid member access kind.")
+            raise SystemExit(1)
 
         elif isinstance(expression, Operation1) and expression.op == "*":
             ptr_reg = self.gen_expression(expression.value, RegisterType.A)
@@ -1475,13 +1502,6 @@ class CodeGenerator:
             return reg
 
         elif isinstance(expression, (Name, MemberAccess, Index)):
-            if (
-                isinstance(expression, MemberAccess)
-                and expression.type == MemberAccessType.PACKAGE
-            ):
-                self.r.error("Package member access is not supported (yet).")  # TODO
-                raise SystemExit(1)
-
             expr_type = self.get_expression_type(expression)
             if self.is_array(expr_type):
                 self.r.error(f"{self.type_name(expr_type)} cannot be an array.")
