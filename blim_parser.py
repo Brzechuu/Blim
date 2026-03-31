@@ -328,8 +328,6 @@ class Parser:
             )
             raise SystemExit(1)
 
-        self.skip_newlines()
-
         while precedence < self.PRECEDENCE.get(
             self.get_token().type, 0
         ) or self.get_token().type in [
@@ -369,7 +367,7 @@ class Parser:
                 self.pos += 1
                 operator_str = infix_token.value
                 current_prec = self.PRECEDENCE.get(infix_token.type, 0)
-                right = self.parse_expression(current_prec + 1)
+                right = self.parse_expression(current_prec)
                 left = Operation2(
                     line=left.line,
                     column=left.column,
@@ -377,8 +375,6 @@ class Parser:
                     left=left,
                     right=right,
                 )
-
-            self.skip_newlines()
 
         return left
 

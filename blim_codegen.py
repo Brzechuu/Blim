@@ -676,8 +676,39 @@ class CodeGenerator:
             )
 
         if isinstance(expression, Operation1):
-            operand_type = self.get_expression_type(expression.value)
+            if expression.op == "&":
+                if not isinstance(
+                    expression.value, (Name, MemberAccess, Index)
+                ) and not (
+                    isinstance(expression.value, Operation1)
+                    and expression.value.op == "*"
+                ):
+                    self.r.error("Operand of '&' must be an l-value.")
+                    raise SystemExit(1)
+                operand_type = self.get_expression_type(expression.value)
+                return Type(
+                    line=expression.line,
+                    column=expression.column,
+                    base_type=operand_type.base_type,
+                    pointer_depth=operand_type.pointer_depth + 1,
+                    array_size=operand_type.array_size,
+                )
+            elif expression.op == "*":
+                operand_type = self.get_expression_type(expression.value)
+                if operand_type.pointer_depth == 0:
+                    self.r.error(
+                        f"Cannot dereference non-pointer type '{self.type_name(operand_type)}'."
+                    )
+                    raise SystemExit(1)
+                return Type(
+                    line=expression.line,
+                    column=expression.column,
+                    base_type=operand_type.base_type,
+                    pointer_depth=operand_type.pointer_depth - 1,
+                    array_size=operand_type.array_size,
+                )
 
+            operand_type = self.get_expression_type(expression.value)
             if expression.op in ("!", "-"):
                 if not self.is_integer(operand_type):
                     self.r.error(
@@ -964,6 +995,10 @@ class CodeGenerator:
             self.allocator.reg_free(offset_reg)
             return MemAddress(register=target_reg)
 
+        elif isinstance(expression, Operation1) and expression.op == "*":
+            ptr_reg = self.gen_expression(expression.value, RegisterType.A)
+            return MemAddress(register=ptr_reg)
+
         self.r.error("Invalid left value")
         raise SystemExit(1)
 
@@ -1147,7 +1182,9 @@ class CodeGenerator:
             raise SystemExit(1)
 
         for i, target_expr in enumerate(targets):
-            if not isinstance(target_expr, (Name, MemberAccess, Index)):
+            if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
+                isinstance(target_expr, Operation1) and target_expr.op == "*"
+            ):
                 self.r.error(
                     "Assignments to complex structures are not supported (yet)."  # TODO
                 )
@@ -1262,7 +1299,9 @@ class CodeGenerator:
                 return
 
             target_expr = statement.targets[0]
-            if not isinstance(target_expr, (Name, MemberAccess, Index)):
+            if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
+                isinstance(target_expr, Operation1) and target_expr.op == "*"
+            ):
                 self.r.error(
                     "Assignments to complex structures are not supported (yet)."  # TODO
                 )
@@ -1464,7 +1503,32 @@ class CodeGenerator:
             return target
 
         elif isinstance(expression, Operation1):
-            if expression.op == "!":
+            if expression.op == "&":
+                addr = self.gen_address(expression.value)
+                target = self.allocator.reg_alloc(target_register_type)
+                if addr.label is not None:
+                    self.emit(f"\tmov {addr.label}, {self.allocator.reg_name(target)}")
+                elif addr.register is not None:
+                    if addr.register != target:
+                        self.emit(
+                            f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(target)}"
+                        )
+                    self.allocator.reg_free(addr.register)
+                else:
+                    self.r.error("Invalid memory address.")
+                    raise SystemExit(1)
+                return target
+
+            elif expression.op == "*":
+                ptr_reg = self.gen_expression(expression.value, RegisterType.A)
+                target = self.allocator.reg_alloc(target_register_type)
+                self.emit(
+                    f"\tload [{self.allocator.reg_name(ptr_reg)}], {self.allocator.reg_name(target)}"
+                )
+                self.allocator.reg_free(ptr_reg)
+                return target
+
+            elif expression.op == "!":
                 value_type = self.get_expression_type(expression.value)
                 if not self.is_integer(value_type):
                     self.r.error(
