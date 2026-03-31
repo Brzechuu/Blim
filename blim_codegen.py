@@ -727,6 +727,28 @@ class CodeGenerator:
                     line=expression.line, column=expression.column, base_type=IntType.U8
                 )
 
+        if isinstance(expression, Index):
+            base_type = self.get_expression_type(expression.value)
+            if not self.is_array(base_type):
+                self.r.error(
+                    f"Cannot index non-array type '{self.type_name(base_type)}'."
+                )
+                raise SystemExit(1)
+            index_type = self.get_expression_type(expression.index)
+            if not self.is_integer(index_type):
+                self.r.error(
+                    f"Array index must be an integer, got '{self.type_name(index_type)}'."
+                )
+                raise SystemExit(1)
+
+            return Type(
+                line=expression.line,
+                column=expression.column,
+                base_type=base_type.base_type,
+                pointer_depth=base_type.pointer_depth,
+                array_size=None,
+            )
+
         if isinstance(expression, Call):
             _, function = self.lookup_function(expression.value)
 
@@ -762,6 +784,124 @@ class CodeGenerator:
             else:
                 reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
                 return MemAddress(register=reg)
+
+        elif isinstance(expression, Index):
+            base_addr = self.gen_address(expression.value, avoid=avoid)
+
+            base_type = self.get_expression_type(expression.value)
+            element_type = Type(
+                line=expression.line,
+                column=expression.column,
+                base_type=base_type.base_type,
+                pointer_depth=base_type.pointer_depth,
+                array_size=None,
+            )
+            element_size = self.resolve_type_size(element_type, self.current_package)
+
+            if base_addr.register is not None:
+                avoid_with_base = set(avoid)
+                avoid_with_base.add(base_addr.register)
+                self.allocator.reg_lock(base_addr.register)
+                index_reg = self.gen_expression(expression.index, RegisterType.B)
+                self.allocator.reg_unlock(base_addr.register)
+            else:
+                index_reg = self.gen_expression(expression.index, RegisterType.B)
+                avoid_with_base = set(avoid)
+
+            avoid_with_base.add(index_reg)
+
+            offset_reg = self.alloc_temp_register(
+                (RegisterType.B,), avoid=avoid_with_base
+            )
+
+            if element_size == 1:
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                )
+            else:
+                tmp_reg = self.alloc_temp_register(
+                    (RegisterType.A,), avoid=avoid_with_base | {offset_reg}
+                )
+                bits = [i for i in range(16) if (element_size & (1 << i))]
+
+                first_bit = bits[0]
+                if first_bit == 0:
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                    )
+                else:
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                    )
+                    if first_bit >= 8:
+                        self.emit(
+                            f"\tsll8 {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                        )
+                        for _ in range(first_bit - 8):
+                            self.emit(
+                                f"\tsll {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                            )
+                    else:
+                        for _ in range(first_bit):
+                            self.emit(
+                                f"\tsll {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                            )
+
+                for bit in bits[1:]:
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                    )
+                    if bit >= 8:
+                        self.emit(
+                            f"\tsll8 {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                        )
+                        for _ in range(bit - 8):
+                            self.emit(
+                                f"\tsll {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                            )
+                    else:
+                        for _ in range(bit):
+                            self.emit(
+                                f"\tsll {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                            )
+
+                    self.emit(
+                        f"\tadd {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(offset_reg)}"
+                    )
+
+                self.allocator.reg_free(tmp_reg)
+
+            self.allocator.reg_free(index_reg)
+
+            if base_addr.label is not None:
+                target_reg = self.alloc_temp_register(
+                    (RegisterType.A,), avoid=avoid_with_base
+                )
+                self.emit(
+                    f"\tmov {base_addr.label}, {self.allocator.reg_name(target_reg)}"
+                )
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+                )
+                self.allocator.reg_free(offset_reg)
+                return MemAddress(register=target_reg)
+            else:
+                assert base_addr.register is not None
+                target_reg = base_addr.register
+                if self.allocator.reg_type(base_addr.register) != RegisterType.A:
+                    target_reg = self.alloc_temp_register(
+                        (RegisterType.A,), avoid=avoid_with_base
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(base_addr.register)}, {self.allocator.reg_name(target_reg)}"
+                    )
+                    self.allocator.reg_free(base_addr.register)
+
+                self.emit(
+                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+                )
+                self.allocator.reg_free(offset_reg)
+                return MemAddress(register=target_reg)
 
         elif (
             isinstance(expression, MemberAccess)
@@ -1007,7 +1147,7 @@ class CodeGenerator:
             raise SystemExit(1)
 
         for i, target_expr in enumerate(targets):
-            if not isinstance(target_expr, (Name, MemberAccess)):
+            if not isinstance(target_expr, (Name, MemberAccess, Index)):
                 self.r.error(
                     "Assignments to complex structures are not supported (yet)."  # TODO
                 )
@@ -1122,7 +1262,7 @@ class CodeGenerator:
                 return
 
             target_expr = statement.targets[0]
-            if not isinstance(target_expr, (Name, MemberAccess)):
+            if not isinstance(target_expr, (Name, MemberAccess, Index)):
                 self.r.error(
                     "Assignments to complex structures are not supported (yet)."  # TODO
                 )
@@ -1295,7 +1435,7 @@ class CodeGenerator:
                 self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
             return reg
 
-        elif isinstance(expression, (Name, MemberAccess)):
+        elif isinstance(expression, (Name, MemberAccess, Index)):
             if (
                 isinstance(expression, MemberAccess)
                 and expression.type == MemberAccessType.PACKAGE
@@ -1509,10 +1649,6 @@ class CodeGenerator:
             self.allocator.reg_states[result_target] = RegisterState.ALLOCATED
             self.allocator.locked_regs.discard(result_target)
             return result_target
-
-        elif isinstance(expression, Index):
-            self.r.error("Index is not supported (yet).")  # TODO
-            raise SystemExit(1)
 
         elif isinstance(expression, ArrayValue):
             self.r.error("ArrayValue is not supported (yet).")  # TODO
