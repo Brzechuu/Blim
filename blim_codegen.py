@@ -24,6 +24,7 @@ from blim_parser import (
     Operation2,
     Return,
     Statement,
+    StringValue,
     StructValue,
     Type,
     Variable,
@@ -1803,15 +1804,55 @@ class CodeGenerator:
                     )
 
                     self.emit(f"{label}:")
-                    if global_var.value and isinstance(global_var.value, Number):
-                        self.emit(f"\t#d16 {global_var.value.value}")
-                        for _ in range(1, size):
-                            self.emit("\t#d16 0")
-                    elif global_var.value:
-                        self.r.error(
-                            f"Global initializer for '{global_var.name}' must be a constant number."
-                        )
-                        raise SystemExit(1)
+                    if global_var.value is not None:
+                        if isinstance(global_var.value, Number):
+                            self.emit(f"\t#d16 {global_var.value.value}")
+                            for _ in range(1, size):
+                                self.emit("\t#d16 0")
+
+                        elif isinstance(global_var.value, ArrayValue):
+                            if len(global_var.value.values) > size:
+                                self.r.error(
+                                    f"Array initializer for '{global_var.name}' has more elements ({len(global_var.value.values)}) than declared size ({size})."
+                                )
+                                raise SystemExit(1)
+
+                            for val in global_var.value.values:
+                                if not isinstance(val, Number):
+                                    self.r.error(
+                                        f"Global array values for '{global_var.name}' must be constant numbers."
+                                    )
+                                    raise SystemExit(1)
+                                self.emit(f"\t#d16 {val.value}")
+
+                            for _ in range(size - len(global_var.value.values)):
+                                self.emit("\t#d16 0")
+
+                        elif isinstance(global_var.value, StringValue):
+                            import ast
+
+                            try:
+                                parsed_str = ast.literal_eval(global_var.value.value)
+                            except Exception:
+                                parsed_str = global_var.value.value.strip('"')
+
+                            if len(parsed_str) > size:
+                                self.r.error(
+                                    f"String length ({len(parsed_str)}) for '{global_var.name}' exceeds declared array size ({size})."
+                                )
+                                raise SystemExit(1)
+
+                            for char in parsed_str:
+                                self.emit(f"\t#d16 {ord(char)} ; {repr(char)}")
+
+                            for _ in range(size - len(parsed_str)):
+                                self.emit("\t#d16 0")
+
+                        else:
+                            self.r.error(
+                                f"Global initializer for '{global_var.name}' must be a constant number, array, or string."
+                            )
+                            raise SystemExit(1)
                     else:
                         for _ in range(size):
                             self.emit("\t#d16 0")

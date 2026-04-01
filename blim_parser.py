@@ -48,6 +48,11 @@ class Number(Expression):
 
 
 @dataclass
+class StringValue(Expression):
+    value: str
+
+
+@dataclass
 class Name(Expression):
     value: str
 
@@ -302,6 +307,22 @@ class Parser:
             left = Number(
                 line=token.line, column=token.column, value=int(token.value, 0)
             )
+
+        elif token.type == TokenType.STRING:
+            left = StringValue(line=token.line, column=token.column, value=token.value)
+
+        elif token.type == TokenType.LEFT_BRACE:
+            values = []
+            self.skip_newlines()
+            if self.get_token().type != TokenType.RIGHT_BRACE:
+                values.append(self.parse_expression(0))
+                self.skip_newlines()
+                while self.match(TokenType.COMMA):
+                    self.skip_newlines()
+                    values.append(self.parse_expression(0))
+                    self.skip_newlines()
+            self.expect(TokenType.RIGHT_BRACE)
+            left = ArrayValue(line=token.line, column=token.column, values=values)
 
         elif token.type == TokenType.IDENTIFIER:
             left = Name(line=token.line, column=token.column, value=token.value)

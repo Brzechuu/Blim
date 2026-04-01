@@ -22,6 +22,7 @@ class TokenType(Enum):
 
     IDENTIFIER = auto()
     NUMBER = auto()
+    STRING = auto()
 
     ASSIGN = auto()  # =
     EQUAL = auto()  # ==
@@ -103,6 +104,7 @@ class Lexer:
             ("NEW_LINE", r"\n"),
             ("HASH_DIRECTIVE", r"#[a-zA-Z_]+"),
             ("NUMBER", r"0[xX][0-9a-fA-F]+|0[bB][01]+|\d+"),
+            ("STRING", r'"[^"\\]*(\\.[^"\\]*)*"'),
             ("IDENTIFIER", r"[a-zA-Z_][a-zA-Z0-9_]*"),
             ("LEFT_ROTATE", r"<<<"),
             ("RIGHT_ROTATE", r">>>"),
@@ -197,6 +199,10 @@ class Lexer:
                 yield Token(
                     TokenType.NUMBER, str(int(value, 0)), start_line, start_column
                 )
+                continue
+
+            if kind == "STRING":
+                yield Token(TokenType.STRING, value, start_line, start_column)
                 continue
 
             if kind is None:
