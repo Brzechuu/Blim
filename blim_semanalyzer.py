@@ -62,11 +62,17 @@ class SemanticAnalyzer:
                 if name in packages_alias:
                     if use.package in packages and not use.alias:
                         self.r.error(
-                            f"Package '{use.package}' is imported multiple times at {file_ast.path.name}:{use.line}:{use.column}"
+                            f"Package '{use.package}' is imported multiple times",
+                            file_ast.path,
+                            use.line,
+                            use.column,
                         )
                     else:
                         self.r.error(
-                            f"Package alias '{name}' is already in use at {file_ast.path.name}:{use.line}:{use.column}"
+                            f"Package alias '{name}' is already in use",
+                            file_ast.path,
+                            use.line,
+                            use.column,
                         )
 
                 packages_alias.add(name)
@@ -75,34 +81,49 @@ class SemanticAnalyzer:
             for global_var in file_ast.global_variables:
                 if global_var.name in package_symbols:
                     self.r.error(
-                        f"Duplicate name '{global_var.name}' in package '{package_name}'. Already declared as {package_symbols[global_var.name]} at {file_ast.path.name}:{global_var.line}:{global_var.column}"
+                        f"Duplicate name '{global_var.name}' in package '{package_name}'. Already declared as {package_symbols[global_var.name]}",
+                        file_ast.path,
+                        global_var.line,
+                        global_var.column,
                     )
                 if global_var.name in packages_alias and isinstance(
                     global_var.type.base_type, str
                 ):
                     self.r.error(
-                        f"Global variable '{global_var.name}' conflicts with imported package or its alias at {file_ast.path.name}:{global_var.line}:{global_var.column}"
+                        f"Global variable '{global_var.name}' conflicts with imported package or its alias",
+                        file_ast.path,
+                        global_var.line,
+                        global_var.column,
                     )
                 package_symbols[global_var.name] = "global variable"
 
             for define in file_ast.defines:
                 if define.name in package_symbols:
                     self.r.error(
-                        f"Duplicate name '{define.name}' in package '{package_name}'. Already declared as {package_symbols[define.name]} at {file_ast.path.name}:{define.line}:{define.column}"
+                        f"Duplicate name '{define.name}' in package '{package_name}'. Already declared as {package_symbols[define.name]}",
+                        file_ast.path,
+                        define.line,
+                        define.column,
                     )
                 package_symbols[define.name] = "define"
 
             for function in file_ast.functions:
                 if function.name in package_symbols:
                     self.r.error(
-                        f"Duplicate name '{function.name}' in package '{package_name}'. Already declared as {package_symbols[function.name]} at {file_ast.path.name}:{function.line}:{function.column}"
+                        f"Duplicate name '{function.name}' in package '{package_name}'. Already declared as {package_symbols[function.name]}",
+                        file_ast.path,
+                        function.line,
+                        function.column,
                     )
                 package_symbols[function.name] = "function"
 
             for struct in file_ast.structures:
                 if struct.name in package_symbols:
                     self.r.error(
-                        f"Duplicate name '{struct.name}' in package '{package_name}'. Already declared as {package_symbols[struct.name]} at {file_ast.path.name}:{struct.line}:{struct.column}"
+                        f"Duplicate name '{struct.name}' in package '{package_name}'. Already declared as {package_symbols[struct.name]}",
+                        file_ast.path,
+                        struct.line,
+                        struct.column,
                     )
                 package_symbols[struct.name] = "struct"
 
@@ -129,24 +150,36 @@ class SemanticAnalyzer:
             for vec in file_ast.interrupt_vectors:
                 if vec.func_name not in env.functions:
                     self.r.error(
-                        f"Interrupt vector '{vec.vector_number}' points to an undefined function '{vec.func_name}' in package '{package_name}' at {file_ast.path.name}:{vec.line}:{vec.column}"
+                        f"Interrupt vector '{vec.vector_number}' points to an undefined function '{vec.func_name}' in package '{package_name}'",
+                        file_ast.path,
+                        vec.line,
+                        vec.column,
                     )
                 else:
                     func = env.functions[vec.func_name]
                     if len(func.params) > 0 and vec.vector_number < 16:
                         self.r.error(
-                            f"Interrupt handler function '{vec.func_name}' cannot take parameters at {file_ast.path.name}:{vec.line}:{vec.column}"
+                            f"Interrupt handler function '{vec.func_name}' cannot take parameters",
+                            file_ast.path,
+                            vec.line,
+                            vec.column,
                         )
                     if len(func.results) > 0 and vec.vector_number < 16:
                         self.r.error(
-                            f"Interrupt handler function '{vec.func_name}' cannot return results at {file_ast.path.name}:{vec.line}:{vec.column}"
+                            f"Interrupt handler function '{vec.func_name}' cannot return results",
+                            file_ast.path,
+                            vec.line,
+                            vec.column,
                         )
 
             for struct in file_ast.structures:
                 for field in struct.fields:
                     if field.name in env.defines:
                         self.r.error(
-                            f"Field '{field.name}' in struct '{struct.name}' cannot use the same name as a define at {file_ast.path.name}:{field.line}:{field.column}"
+                            f"Field '{field.name}' in struct '{struct.name}' cannot use the same name as a define",
+                            file_ast.path,
+                            field.line,
+                            field.column,
                         )
 
             packages: dict[str, str] = {}
@@ -174,14 +207,20 @@ class SemanticAnalyzer:
         for param in function.params:
             if param.name in env.defines:
                 self.r.error(
-                    f"Parameter '{param.name}' cannot use the same name as a define at {file_ast.path.name}:{param.line}:{param.column}"
+                    f"Parameter '{param.name}' cannot use the same name as a define",
+                    file_ast.path,
+                    param.line,
+                    param.column,
                 )
             fun_scope[param.name] = param
 
         for result in function.results:
             if result.name in env.defines:
                 self.r.error(
-                    f"Result '{result.name}' cannot use the same name as a define at {file_ast.path.name}:{result.line}:{result.column}"
+                    f"Result '{result.name}' cannot use the same name as a define",
+                    file_ast.path,
+                    result.line,
+                    result.column,
                 )
             fun_scope[result.name] = result
 
@@ -209,7 +248,10 @@ class SemanticAnalyzer:
         elif isinstance(statement, Variable):
             if statement.name in env.defines:
                 self.r.error(
-                    f"Local variable '{statement.name}' cannot use the same name as a define at {file_ast.path.name}:{statement.line}:{statement.column}"
+                    f"Local variable '{statement.name}' cannot use the same name as a define",
+                    file_ast.path,
+                    statement.line,
+                    statement.column,
                 )
 
             if statement.value:
@@ -222,7 +264,10 @@ class SemanticAnalyzer:
             for target in statement.targets:
                 if isinstance(target, Name) and target.value in env.defines:
                     self.r.error(
-                        f"Cannot assign to define '{target.value}' at {file_ast.path.name}:{target.line}:{target.column}"
+                        f"Cannot assign to define '{target.value}'",
+                        file_ast.path,
+                        target.line,
+                        target.column,
                     )
 
                 self.analyze_expression(target, scopes, env, packages, file_ast)
@@ -287,7 +332,10 @@ class SemanticAnalyzer:
                 pass
             else:
                 self.r.error(
-                    f"Use of undeclared identifier '{name}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                    f"Use of undeclared identifier '{name}'",
+                    file_ast.path,
+                    expression.line,
+                    expression.column,
                 )
 
         elif isinstance(expression, Operation1):
@@ -303,7 +351,10 @@ class SemanticAnalyzer:
 
                 if name not in env.functions:
                     self.r.error(
-                        f"Use of undeclared function '{name}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                        f"Use of undeclared function '{name}'",
+                        file_ast.path,
+                        expression.line,
+                        expression.column,
                     )
             elif isinstance(expression.value, MemberAccess):
                 package_call = False
@@ -318,11 +369,17 @@ class SemanticAnalyzer:
                         target_env = self.packages_env.get(packages[pkg_alias])
                         if target_env is None:
                             self.r.error(
-                                f"Package '{packages[pkg_alias]}' not found at {file_ast.path.name}:{expression.line}:{expression.column}"
+                                f"Package '{packages[pkg_alias]}' not found",
+                                file_ast.path,
+                                expression.line,
+                                expression.column,
                             )
                         elif func_name not in target_env.functions:
                             self.r.error(
-                                f"Function '{func_name}' not found in package '{pkg_alias}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                                f"Function '{func_name}' not found in package '{pkg_alias}'",
+                                file_ast.path,
+                                expression.line,
+                                expression.column,
                             )
 
                 if not package_call:
@@ -354,22 +411,34 @@ class SemanticAnalyzer:
 
                     if target_env is None:
                         self.r.error(
-                            f"Package '{packages[ident]}' not found at {file_ast.path.name}:{expression.line}:{expression.column}"
+                            f"Package '{packages[ident]}' not found",
+                            file_ast.path,
+                            expression.line,
+                            expression.column,
                         )
                     elif (
                         member_name not in target_env.variables
                         and member_name not in target_env.defines
                     ):
                         self.r.error(
-                            f"Variable or define '{member_name}' not found in package '{ident}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                            f"Variable or define '{member_name}' not found in package '{ident}'",
+                            file_ast.path,
+                            expression.line,
+                            expression.column,
                         )
                 elif ident in env.defines:
                     self.r.error(
-                        f"Cannot use dot notation on define '{ident}' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                        f"Cannot use dot notation on define '{ident}'",
+                        file_ast.path,
+                        expression.line,
+                        expression.column,
                     )
                 else:
                     self.r.error(
-                        f"Unknown identifier '{ident}' before '.' at {file_ast.path.name}:{expression.line}:{expression.column}"
+                        f"Unknown identifier '{ident}' before '.'",
+                        file_ast.path,
+                        expression.line,
+                        expression.column,
                     )
             else:
                 self.analyze_expression(
@@ -396,7 +465,10 @@ class SemanticAnalyzer:
                 for vec in file_ast.interrupt_vectors:
                     if vec.vector_number in global_vectors:
                         self.r.error(
-                            f"Duplicate interrupt vector '{vec.vector_number}' at {file_ast.path.name}:{vec.line}:{vec.column}"
+                            f"Duplicate interrupt vector '{vec.vector_number}'",
+                            file_ast.path,
+                            vec.line,
+                            vec.column,
                         )
                     global_vectors.add(vec.vector_number)
 

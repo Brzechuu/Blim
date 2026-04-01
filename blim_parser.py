@@ -288,7 +288,10 @@ class Parser:
             return token
 
         self.r.error(
-            f"Expected {expected_type.name}, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+            f"Expected {expected_type.name}, but got {token.type.name} ('{token.value}')",
+            self.path,
+            token.line,
+            token.column,
         )
         raise SystemExit(1)
 
@@ -345,7 +348,10 @@ class Parser:
 
         else:
             self.r.error(
-                f"Expected EXPRESSION, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                f"Expected EXPRESSION, but got {token.type.name} ('{token.value}')",
+                self.path,
+                token.line,
+                token.column,
             )
             raise SystemExit(1)
 
@@ -406,7 +412,10 @@ class Parser:
         while not self.match(TokenType.RIGHT_BRACE):
             if self.get_token().type == TokenType.EOF:
                 self.r.error(
-                    f"Unclosed '{{' in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                    "Unclosed '{'",
+                    self.path,
+                    token.line,
+                    token.column,
                 )
             statements.append(self.parse_statement())
             self.skip_newlines()
@@ -469,7 +478,10 @@ class Parser:
             while not self.match(TokenType.RIGHT_BRACE):
                 if self.get_token().type == TokenType.EOF:
                     self.r.error(
-                        f"Unclosed asm block in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                        "Unclosed asm block",
+                        self.path,
+                        token.line,
+                        token.column,
                     )
 
                 asm_line = []
@@ -553,7 +565,10 @@ class Parser:
                 base_type = f"{base_type}.{member_token.value}"
         else:
             self.r.error(
-                f"Expected TYPE, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                f"Expected TYPE, but got {token.type.name} ('{token.value}')",
+                self.path,
+                token.line,
+                token.column,
             )
             raise SystemExit(1)
 
@@ -629,7 +644,10 @@ class Parser:
 
                 else:
                     self.r.error(
-                        f"Unknown directive '#{directive_name}' in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                        f"Unknown directive '#{directive_name}'",
+                        self.path,
+                        token.line,
+                        token.column,
                     )
 
             elif token.type == TokenType.IDENTIFIER:
@@ -649,11 +667,17 @@ class Parser:
                     ast.global_variables.append(self.parse_global_var(token))
                 else:
                     self.r.error(
-                        f"Expected 'struct', 'fun' or type, but got {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                        f"Expected 'struct', 'fun' or type, but got {token.type.name} ('{token.value}')",
+                        self.path,
+                        token.line,
+                        token.column,
                     )
             else:
                 self.r.error(
-                    f"Unexpected token {token.type.name} ('{token.value}') in {self.path.relative_to(self.project_path)}:{token.line}:{token.column}"
+                    f"Unexpected token {token.type.name} ('{token.value}')",
+                    self.path,
+                    token.line,
+                    token.column,
                 )
                 self.pos += 1
 
