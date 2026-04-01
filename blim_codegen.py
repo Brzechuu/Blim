@@ -549,7 +549,9 @@ class CodeGenerator:
         if leak_size > 0:
             self.adjust_sp(leak_size)
 
-    def resolve_type_size(self, var_type: Type, current_package: str) -> int:
+    def resolve_type_size(
+        self, var_type: Type, current_package: str, current_file_ast
+    ) -> int:
         base_size = 1
 
         if isinstance(var_type.base_type, IntType):
@@ -558,7 +560,17 @@ class CodeGenerator:
             struct_name = var_type.base_type
             target_package = current_package
             if "." in struct_name:
-                target_package, struct_name = struct_name.split(".", 1)
+                prefix, struct_name = struct_name.split(".", 1)
+
+                resolved = False
+                for imp in current_file_ast.imports:
+                    if imp.alias == prefix or imp.package == prefix:
+                        target_package = imp.package
+                        resolved = True
+                        break
+
+                if not resolved:
+                    target_package = prefix
 
             found_struct = False
             if target_package in self.project_ast:
@@ -566,7 +578,7 @@ class CodeGenerator:
                     for struct_def in file_ast.structures:
                         if struct_def.name == struct_name:
                             base_size = sum(
-                                self.resolve_type_size(f.type, target_package)
+                                self.resolve_type_size(f.type, target_package, file_ast)
                                 for f in struct_def.fields
                             )
                             found_struct = True
@@ -591,7 +603,17 @@ class CodeGenerator:
     ) -> int:
         target_package = current_package
         if "." in struct_name:
-            target_package, struct_name = struct_name.split(".", 1)
+            prefix, struct_name = struct_name.split(".", 1)
+
+            resolved = False
+            if hasattr(self, "current_file_ast") and self.current_file_ast:
+                for imp in self.current_file_ast.imports:
+                    if imp.alias == prefix or imp.package == prefix:
+                        target_package = imp.package
+                        resolved = True
+                        break
+            if not resolved:
+                target_package = prefix
 
         if target_package in self.project_ast:
             for file_ast in self.project_ast[target_package]:
@@ -602,7 +624,7 @@ class CodeGenerator:
                             if field.name == field_name:
                                 return current_offset
                             current_offset += self.resolve_type_size(
-                                field.type, target_package
+                                field.type, target_package, file_ast
                             )
 
                         self.r.error(
@@ -618,7 +640,17 @@ class CodeGenerator:
     ) -> Type:
         target_package = current_package
         if "." in struct_name:
-            target_package, struct_name = struct_name.split(".", 1)
+            prefix, struct_name = struct_name.split(".", 1)
+
+            resolved = False
+            if hasattr(self, "current_file_ast") and self.current_file_ast:
+                for imp in self.current_file_ast.imports:
+                    if imp.alias == prefix or imp.package == prefix:
+                        target_package = imp.package
+                        resolved = True
+                        break
+            if not resolved:
+                target_package = prefix
 
         if target_package in self.project_ast:
             for file_ast in self.project_ast[target_package]:
@@ -626,7 +658,22 @@ class CodeGenerator:
                     if struct_def.name == struct_name:
                         for field in struct_def.fields:
                             if field.name == field_name:
-                                return field.type
+                                field_type_copy = Type(
+                                    line=field.type.line,
+                                    column=field.type.column,
+                                    base_type=field.type.base_type,
+                                    pointer_depth=field.type.pointer_depth,
+                                    array_size=field.type.array_size,
+                                )
+                                if (
+                                    isinstance(field_type_copy.base_type, str)
+                                    and "." not in field_type_copy.base_type
+                                ):
+                                    field_type_copy.base_type = (
+                                        f"{target_package}.{field_type_copy.base_type}"
+                                    )
+
+                                return field_type_copy
 
                         self.r.error(
                             f"Field '{field_name}' not found in struct '{struct_name}'"
@@ -834,7 +881,9 @@ class CodeGenerator:
                 pointer_depth=base_type.pointer_depth,
                 array_size=None,
             )
-            element_size = self.resolve_type_size(element_type, self.current_package)
+            element_size = self.resolve_type_size(
+                element_type, self.current_package, self.current_file_ast
+            )
 
             if base_addr.register is not None:
                 avoid_with_base = set(avoid)
@@ -1082,11 +1131,12 @@ class CodeGenerator:
 
         return saved_reg_states, saved_locked_regs, spilled
 
-    def gen_function(self, package: str, function: Function):
+    def gen_function(self, package: str, file_ast, function: Function):
         self.id_counter = 0
         self.scopes.clear()
         self.current_stack_offset = 0
         self.current_package = package
+        self.current_file_ast = file_ast
         self.allocator.reg_unlock_and_reset_states()
 
         if len(function.params) > len(ARGUMENT_REGISTERS):
@@ -1109,7 +1159,9 @@ class CodeGenerator:
         start_offset = self.current_stack_offset
 
         for param in function.params:
-            size = self.resolve_type_size(param.type, self.current_package)
+            size = self.resolve_type_size(
+                param.type, self.current_package, self.current_file_ast
+            )
             if size != 1 or self.is_array(param.type) or self.is_struct(param.type):
                 self.r.error(
                     f"Function parameter '{param.name}' must fit in one register."
@@ -1127,7 +1179,9 @@ class CodeGenerator:
             frame_size += size
 
         for result in function.results:
-            size = self.resolve_type_size(result.type, self.current_package)
+            size = self.resolve_type_size(
+                result.type, self.current_package, self.current_file_ast
+            )
             if size != 1 or self.is_array(result.type) or self.is_struct(result.type):
                 self.r.error(
                     f"Function result '{result.name}' must fit in one register."
@@ -1265,7 +1319,9 @@ class CodeGenerator:
                         )
                         raise SystemExit(1)
 
-                    size = self.resolve_type_size(s.type, self.current_package)
+                    size = self.resolve_type_size(
+                        s.type, self.current_package, self.current_file_ast
+                    )
                     start_offset -= size
 
                     self.scopes[-1][s.name] = Symbol(
@@ -1792,7 +1848,7 @@ class CodeGenerator:
                         )
                         raise SystemExit(1)
 
-                    size = self.resolve_type_size(global_var.type, package)
+                    size = self.resolve_type_size(global_var.type, package, file_ast)
                     label = f"_global__{package}__{global_var.name}"
 
                     globals_map[global_var.name] = Symbol(
@@ -1862,6 +1918,6 @@ class CodeGenerator:
         for files_ast in self.project_ast.values():
             for file_ast in files_ast:
                 for function in file_ast.functions:
-                    self.gen_function(file_ast.package, function)
+                    self.gen_function(file_ast.package, file_ast, function)
 
         return "\n".join(self.lines)
