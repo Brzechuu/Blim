@@ -1260,7 +1260,15 @@ class CodeGenerator:
             frame_size += size
 
         self.current_stack_offset -= frame_size
+
+        for i in range(len(function.params)):
+            self.allocator.reg_alloc_specific(ARGUMENT_REGISTERS[i])
+            self.allocator.reg_lock(ARGUMENT_REGISTERS[i])
+
         self.adjust_sp(-frame_size)
+
+        for i in range(len(function.params)):
+            self.allocator.reg_unlock(ARGUMENT_REGISTERS[i])
 
         for i, param in enumerate(function.params):
             src_reg = ARGUMENT_REGISTERS[i]
