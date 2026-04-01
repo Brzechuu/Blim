@@ -1,3 +1,4 @@
+import ast
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, auto
 
@@ -269,11 +270,20 @@ class CodeGenerator:
         return False
 
     def same_type(self, a: Type, b: Type) -> bool:
-        return (
-            a.base_type == b.base_type
-            and a.pointer_depth == b.pointer_depth
-            and self.same_array_size(a, b)
-        )
+        if a.pointer_depth != b.pointer_depth or not self.same_array_size(a, b):
+            return False
+
+        if isinstance(a.base_type, str) and isinstance(b.base_type, str):
+            a_base = a.base_type
+            b_base = b.base_type
+
+            a_clean = a_base.split(".")[-1]
+            b_clean = b_base.split(".")[-1]
+
+            if a_clean == b_clean:
+                return True
+
+        return a.base_type == b.base_type
 
     def is_integer(self, var_type: Type) -> bool:
         return (
@@ -353,7 +363,19 @@ class CodeGenerator:
             and expression.type == MemberAccessType.PACKAGE
             and isinstance(expression.value, Name)
         ):
-            target_package = expression.value.value
+            prefix = expression.value.value
+            target_package = prefix
+
+            resolved = False
+            for file_ast in self.project_ast.get(self.current_package, []):
+                for imp in file_ast.imports:
+                    if imp.alias == prefix or imp.package == prefix:
+                        target_package = imp.package
+                        resolved = True
+                        break
+                if resolved:
+                    break
+
             func_name = expression.member
 
             for file_ast in self.project_ast.get(target_package, []):
@@ -392,10 +414,10 @@ class CodeGenerator:
         if left_type.base_type == right_type.base_type:
             return left_type
 
-        if isinstance(left_expr, Number):
+        if isinstance(left_expr, (Number, StringValue)):
             return right_type
 
-        if isinstance(right_expr, Number):
+        if isinstance(right_expr, (Number, StringValue)):
             return left_type
 
         self.r.error(
@@ -434,7 +456,7 @@ class CodeGenerator:
             return
 
         if self.is_integer(target_type) and self.is_integer(value_type):
-            if isinstance(value_expr, Number):
+            if isinstance(value_expr, (Number, StringValue)):
                 return
 
         self.r.error(
@@ -552,6 +574,9 @@ class CodeGenerator:
     def resolve_type_size(
         self, var_type: Type, current_package: str, current_file_ast
     ) -> int:
+        if var_type.pointer_depth > 0:
+            return 1
+
         base_size = 1
 
         if isinstance(var_type.base_type, IntType):
@@ -696,6 +721,28 @@ class CodeGenerator:
                 line=expression.line, column=expression.column, base_type=IntType.I16
             )
 
+        if isinstance(expression, StringValue):
+            try:
+                parsed_str = ast.literal_eval(expression.value)
+            except Exception:
+                parsed_str = expression.value.strip('"')
+
+            length = len(parsed_str)
+            if length == 1:
+                return Type(
+                    line=expression.line,
+                    column=expression.column,
+                    base_type=IntType.I16,
+                )
+            return Type(
+                line=expression.line,
+                column=expression.column,
+                base_type=IntType.I16,
+                array_size=Number(
+                    line=expression.line, column=expression.column, value=length
+                ),
+            )
+
         if isinstance(expression, Name):
             return self.lookup_variable(expression.value).type
 
@@ -704,7 +751,14 @@ class CodeGenerator:
                 if not isinstance(expression.value, Name):
                     self.r.error("Package name must be an identifier.")
                     raise SystemExit(1)
-                pkg_name = expression.value.value
+
+                prefix = expression.value.value
+                pkg_name = prefix
+                if hasattr(self, "current_file_ast") and self.current_file_ast:
+                    for imp in self.current_file_ast.imports:
+                        if imp.alias == prefix or imp.package == prefix:
+                            pkg_name = imp.package
+                            break
                 var_name = expression.member
 
                 pkg_globals = self.package_globals.get(pkg_name)
@@ -996,7 +1050,14 @@ class CodeGenerator:
                     self.r.error("Package name must be an identifier.")
                     raise SystemExit(1)
 
-                pkg_name = expression.value.value
+                prefix = expression.value.value
+                pkg_name = prefix
+                if hasattr(self, "current_file_ast") and self.current_file_ast:
+                    for imp in self.current_file_ast.imports:
+                        if imp.alias == prefix or imp.package == prefix:
+                            pkg_name = imp.package
+                            break
+
                 var_name = expression.member
 
                 pkg_globals = self.package_globals.get(pkg_name)
@@ -1558,6 +1619,25 @@ class CodeGenerator:
                 self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
             return reg
 
+        elif isinstance(expression, StringValue):
+            reg = self.allocator.reg_alloc(target_register_type)
+            import ast
+
+            try:
+                parsed_str = ast.literal_eval(expression.value)
+            except Exception:
+                parsed_str = expression.value.strip('"')
+
+            if len(parsed_str) != 1:
+                self.r.error(
+                    "String literals used in expressions must be exactly 1 character long."
+                )
+                raise SystemExit(1)
+
+            char_code = ord(parsed_str[0])
+            self.emit(f"\tmov {char_code}, {self.allocator.reg_name(reg)}")
+            return reg
+
         elif isinstance(expression, (Name, MemberAccess, Index)):
             expr_type = self.get_expression_type(expression)
             if self.is_array(expr_type):
@@ -1885,8 +1965,6 @@ class CodeGenerator:
                                 self.emit("\t#d16 0")
 
                         elif isinstance(global_var.value, StringValue):
-                            import ast
-
                             try:
                                 parsed_str = ast.literal_eval(global_var.value.value)
                             except Exception:
