@@ -430,14 +430,14 @@ class CodeGenerator:
     ) -> Type:
         if not self.is_integer(left_type):
             self.error(
-                f"Left operand of '{context}' must be an integer, got '{self.type_name(left_type)}'",
+                f"Left operand of {context} must be an integer, got '{self.type_name(left_type)}'",
                 left_expr,
             )
             raise SystemExit(1)
 
         if not self.is_integer(right_type):
             self.error(
-                f"Right operand of '{context}' must be an integer, got '{self.type_name(right_type)}'",
+                f"Right operand of {context} must be an integer, got '{self.type_name(right_type)}'",
                 right_expr,
             )
             raise SystemExit(1)
@@ -457,7 +457,7 @@ class CodeGenerator:
             return left_type
 
         self.error(
-            f"Type mismatch in '{context}': '{self.type_name(left_type)}' vs '{self.type_name(right_type)}'",
+            f"Type mismatch in {context}: '{self.type_name(left_type)}' vs '{self.type_name(right_type)}'",
             left_expr,
         )
         raise SystemExit(1)
@@ -509,7 +509,7 @@ class CodeGenerator:
                 return
 
         self.error(
-            f"Type mismatch in '{context}': cannot assign '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
+            f"Type mismatch in {context}: cannot assign '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
             value_expr,
         )
         raise SystemExit(1)
