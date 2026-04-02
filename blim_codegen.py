@@ -243,6 +243,18 @@ class CodeGenerator:
         else:
             self.r.error(message, file=file_path)
 
+    def warn(self, message: str, node: Any = None):
+        if hasattr(self, "current_file_ast") and self.current_file_ast:
+            file_path = self.current_file_ast.path
+        else:
+            file_path = None
+        if node and hasattr(node, "line") and hasattr(node, "column"):
+            self.r.warn(message, file=file_path, line=node.line, column=node.column)
+        elif node and hasattr(node, "line"):
+            self.r.warn(message, file=file_path, line=node.line)
+        else:
+            self.r.warn(message, file=file_path)
+
     def emit(self, text: str = ""):
         self.lines.append(text)
 
