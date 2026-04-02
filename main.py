@@ -64,7 +64,10 @@ def main():
         for token in tokens:
             if token.type == TokenType.ILLEGAL:
                 r.error(
-                    f"Illegal token '{token.value}' in {path.relative_to(project_path)}:{token.line}:{token.column}"
+                    f"Illegal token '{token.value}'",
+                    path,
+                    token.line,
+                    token.column,
                 )
 
         if r.error_counter:

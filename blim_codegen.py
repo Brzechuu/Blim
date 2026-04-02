@@ -1,6 +1,7 @@
 import ast
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, auto
+from typing import Any
 
 from blim_parser import (
     ArrayValue,
@@ -26,7 +27,6 @@ from blim_parser import (
     Return,
     Statement,
     StringValue,
-    StructValue,
     Type,
     Variable,
     While,
@@ -137,13 +137,17 @@ class RegisterAllocator:
         if register in self.locked_regs:
             return
         if self.reg_state(register) != RegisterState.ALLOCATED:
-            self.r.error(f"Cannot lock {self.reg_name(register)} – not allocated.")
+            self.r.error(
+                f"Cannot lock not allocated register '{self.reg_name(register)}'"
+            )
             raise SystemExit(1)
         self.locked_regs.add(register)
 
     def reg_unlock(self, register: Register):
         if register not in self.locked_regs:
-            self.r.error(f"Cannot unlock {self.reg_name(register)} – not locked.")
+            self.r.error(
+                f"Cannot unlock not locked register '{self.reg_name(register)}'"
+            )
             raise SystemExit(1)
         self.locked_regs.remove(register)
 
@@ -175,7 +179,7 @@ class RegisterAllocator:
             if self.reg_type(register) == reg_type and state == RegisterState.FREE:
                 self.reg_states[register] = RegisterState.ALLOCATED
                 return register
-        self.r.error(f"No free {reg_type.name.lower()} registers.")
+        self.r.error(f"No free '{reg_type.name.lower()}' registers")
         raise SystemExit(1)
 
     def reg_alloc_specific(self, register: Register):
@@ -183,7 +187,7 @@ class RegisterAllocator:
             self.reg_states[register] = RegisterState.ALLOCATED
             return
         self.r.error(
-            f"Cannot allocate specific register {self.reg_name(register)} – it is already {self.reg_state(register).name}."
+            f"Cannot allocate register '{self.reg_name(register)}', it is '{self.reg_state(register).name}'"
         )
         raise SystemExit(1)
 
@@ -195,21 +199,21 @@ class RegisterAllocator:
         if self.reg_state(register) == RegisterState.ALLOCATED:
             self.reg_states[register] = RegisterState.FREE
             return
-        self.r.error(f"Cannot free {self.reg_name(register)}.")
+        self.r.error(f"Cannot free '{self.reg_name(register)}'")
         raise SystemExit(1)
 
     def reg_reserve(self, register: Register):
         if self.reg_state(register) == RegisterState.FREE:
             self.reg_states[register] = RegisterState.RESERVED
             return
-        self.r.error(f"Cannot reserve {self.reg_name(register)}.")
+        self.r.error(f"Cannot reserve '{self.reg_name(register)}'")
         raise SystemExit(1)
 
     def reg_unreserve(self, register: Register):
         if self.reg_state(register) == RegisterState.RESERVED:
             self.reg_states[register] = RegisterState.FREE
             return
-        self.r.error(f"Cannot unreserve {self.reg_name(register)}.")
+        self.r.error(f"Cannot unreserve '{self.reg_name(register)}'")
         raise SystemExit(1)
 
 
@@ -226,6 +230,18 @@ class CodeGenerator:
         self.current_package: str = ""
         self.current_stack_offset: int = 0
         self.package_globals: dict[str, dict[str, Symbol]] = {}
+
+    def error(self, message: str, node: Any = None):
+        if hasattr(self, "current_file_ast") and self.current_file_ast:
+            file_path = self.current_file_ast.path
+        else:
+            file_path = None
+        if node and hasattr(node, "line") and hasattr(node, "column"):
+            self.r.error(message, file=file_path, line=node.line, column=node.column)
+        elif node and hasattr(node, "line"):
+            self.r.error(message, file=file_path, line=node.line)
+        else:
+            self.r.error(message, file=file_path)
 
     def emit(self, text: str = ""):
         self.lines.append(text)
@@ -318,7 +334,7 @@ class CodeGenerator:
                     return register
 
         pref = ", ".join(rt.name.lower() for rt in preferred_types)
-        self.r.error(f"No free temporary register available ({pref}).")
+        self.r.error(f"No free temporary register '{pref}' available")
         raise SystemExit(1)
 
     def find_free_register_in_state(
@@ -330,7 +346,7 @@ class CodeGenerator:
             if reg_states[register] == RegisterState.FREE:
                 return register
         self.r.error(
-            f"No free {reg_type.name.lower()} register available for call result."
+            f"No free '{reg_type.name.lower()}' register available for call result"
         )
         raise SystemExit(1)
 
@@ -355,7 +371,7 @@ class CodeGenerator:
                     if function.name == func_name:
                         return self.current_package, function
 
-            self.r.error(f"Undefined function '{func_name}'.")
+            self.error(f"Undefined function '{func_name}'", expression)
             raise SystemExit(1)
 
         if (
@@ -383,12 +399,13 @@ class CodeGenerator:
                     if function.name == func_name:
                         return target_package, function
 
-            self.r.error(
-                f"Undefined function '{func_name}' in package '{target_package}'."
+            self.error(
+                f"Undefined function '{func_name}' in package '{target_package}'",
+                expression,
             )
             raise SystemExit(1)
 
-        self.r.error("Unsupported function call target.")
+        self.error("Unsupported function call target", expression)
         raise SystemExit(1)
 
     def unify_int_types(
@@ -400,14 +417,16 @@ class CodeGenerator:
         context: str,
     ) -> Type:
         if not self.is_integer(left_type):
-            self.r.error(
-                f"Left operand of {context} must be an integer, got {self.type_name(left_type)}."
+            self.error(
+                f"Left operand of '{context}' must be an integer, got '{self.type_name(left_type)}'",
+                left_expr,
             )
             raise SystemExit(1)
 
         if not self.is_integer(right_type):
-            self.r.error(
-                f"Right operand of {context} must be an integer, got {self.type_name(right_type)}."
+            self.error(
+                f"Right operand of '{context}' must be an integer, got '{self.type_name(right_type)}'",
+                right_expr,
             )
             raise SystemExit(1)
 
@@ -420,8 +439,9 @@ class CodeGenerator:
         if isinstance(right_expr, (Number, StringValue)):
             return left_type
 
-        self.r.error(
-            f"Type mismatch in {context}: {self.type_name(left_type)} vs {self.type_name(right_type)}."
+        self.error(
+            f"Type mismatch in '{context}': '{self.type_name(left_type)}' vs '{self.type_name(right_type)}'",
+            left_expr,
         )
         raise SystemExit(1)
 
@@ -433,22 +453,28 @@ class CodeGenerator:
         context: str,
     ):
         if self.is_array(target_type):
-            self.r.error(f"{self.type_name(target_type)} target cannot be an array.")
+            self.error(
+                f"'{self.type_name(target_type)}' target cannot be an array", value_expr
+            )
             raise SystemExit(1)
 
         if self.is_struct(target_type):
-            self.r.error(
-                f"{self.type_name(target_type)} target cannot be a struct value."
+            self.error(
+                f"'{self.type_name(target_type)}' target cannot be a struct value",
+                value_expr,
             )
             raise SystemExit(1)
 
         if self.is_array(value_type):
-            self.r.error(f"{self.type_name(value_type)} value cannot be an array.")
+            self.error(
+                f"'{self.type_name(value_type)}' value cannot be an array", value_expr
+            )
             raise SystemExit(1)
 
         if self.is_struct(value_type):
-            self.r.error(
-                f"{self.type_name(value_type)} value cannot be a struct value."
+            self.error(
+                f"'{self.type_name(value_type)}' value cannot be a struct value",
+                value_expr,
             )
             raise SystemExit(1)
 
@@ -459,8 +485,9 @@ class CodeGenerator:
             if isinstance(value_expr, (Number, StringValue)):
                 return
 
-        self.r.error(
-            f"Type mismatch in {context}: cannot assign {self.type_name(value_type)} to {self.type_name(target_type)}."
+        self.error(
+            f"Type mismatch in '{context}': cannot assign '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
+            value_expr,
         )
         raise SystemExit(1)
 
@@ -611,14 +638,14 @@ class CodeGenerator:
                     if found_struct:
                         break
             if not found_struct:
-                self.r.error(f"Unknown type: {var_type.base_type}")
+                self.error(f"Unknown type '{var_type.base_type}'", var_type)
                 raise SystemExit(1)
 
         if var_type.array_size:
             if isinstance(var_type.array_size, Number):
                 return base_size * var_type.array_size.value
             else:
-                self.r.error("Array size must be a constant number.")
+                self.error("Array size must be a constant number", var_type)
                 raise SystemExit(1)
 
         return base_size
@@ -657,7 +684,7 @@ class CodeGenerator:
                         )
                         raise SystemExit(1)
 
-        self.r.error(f"Unknown struct type: {struct_name}")
+        self.r.error(f"Unknown struct type '{struct_name}'")
         raise SystemExit(1)
 
     def get_struct_field_type(
@@ -705,7 +732,7 @@ class CodeGenerator:
                         )
                         raise SystemExit(1)
 
-        self.r.error(f"Unknown struct type: {struct_name}")
+        self.r.error(f"Unknown struct type '{struct_name}'")
         raise SystemExit(1)
 
     def lookup_variable(self, name: str) -> Symbol:
@@ -749,7 +776,7 @@ class CodeGenerator:
         if isinstance(expression, MemberAccess):
             if expression.type == MemberAccessType.PACKAGE:
                 if not isinstance(expression.value, Name):
-                    self.r.error("Package name must be an identifier.")
+                    self.error("Package name must be an identifier", expression)
                     raise SystemExit(1)
 
                 prefix = expression.value.value
@@ -763,20 +790,23 @@ class CodeGenerator:
 
                 pkg_globals = self.package_globals.get(pkg_name)
                 if not pkg_globals or var_name not in pkg_globals:
-                    self.r.error(f"Global variable '{pkg_name}.{var_name}' not found.")
+                    self.error(
+                        f"Global variable '{pkg_name}.{var_name}' not found", expression
+                    )
                     raise SystemExit(1)
                 return pkg_globals[var_name].type
 
             elif expression.type == MemberAccessType.FIELD:
                 base_type = self.get_expression_type(expression.value)
                 if base_type.pointer_depth > 0:
-                    self.r.error(
-                        "Pointer auto-dereference is not supported. Use '(*ptr).field'."
+                    self.error(
+                        "Pointer auto-dereference is not supported. Use '(*ptr).field'",
+                        expression,
                     )
                     raise SystemExit(1)
 
                 if not isinstance(base_type.base_type, str):
-                    self.r.error("Base expression is not a struct.")
+                    self.error("Base expression is not a struct", expression)
                     raise SystemExit(1)
 
                 return self.get_struct_field_type(
@@ -791,7 +821,7 @@ class CodeGenerator:
                     isinstance(expression.value, Operation1)
                     and expression.value.op == "*"
                 ):
-                    self.r.error("Operand of '&' must be an l-value.")
+                    self.error("Operand of '&' must be an l-value", expression)
                     raise SystemExit(1)
                 operand_type = self.get_expression_type(expression.value)
                 return Type(
@@ -804,8 +834,9 @@ class CodeGenerator:
             elif expression.op == "*":
                 operand_type = self.get_expression_type(expression.value)
                 if operand_type.pointer_depth == 0:
-                    self.r.error(
-                        f"Cannot dereference non-pointer type '{self.type_name(operand_type)}'."
+                    self.error(
+                        f"Cannot dereference non-pointer type '{self.type_name(operand_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
                 return Type(
@@ -819,13 +850,14 @@ class CodeGenerator:
             operand_type = self.get_expression_type(expression.value)
             if expression.op in ("!", "-"):
                 if not self.is_integer(operand_type):
-                    self.r.error(
-                        f"Operand '{expression.op}' must be an integer, got {self.type_name(operand_type)}."
+                    self.error(
+                        f"Operand '{expression.op}' must be an integer, got '{self.type_name(operand_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
                 return operand_type
 
-            self.r.error(f"Operation '{expression.op}' is not supported.")
+            self.error(f"Operation '{expression.op}' is not supported", expression)
             raise SystemExit(1)
 
         if isinstance(expression, Operation2):
@@ -843,13 +875,14 @@ class CodeGenerator:
 
             if expression.op in ("<<", ">>", "<<<", ">>>", ">=>"):
                 if not self.is_integer(left_type):
-                    self.r.error(
-                        f"Left operand of '{expression.op}' must be an integer, got {self.type_name(left_type)}."
+                    self.error(
+                        f"Left operand of '{expression.op}' must be an integer, got '{self.type_name(left_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
 
                 if not isinstance(expression.right, Number):
-                    self.r.error("Dynamic shifts is not supported (yet).")  # TODO
+                    self.error("Dynamic shifts is not supported", expression)
                     raise SystemExit(1)
 
                 return left_type
@@ -869,14 +902,16 @@ class CodeGenerator:
         if isinstance(expression, Index):
             base_type = self.get_expression_type(expression.value)
             if not self.is_array(base_type):
-                self.r.error(
-                    f"Cannot index non-array type '{self.type_name(base_type)}'."
+                self.error(
+                    f"Cannot index non-array type '{self.type_name(base_type)}'",
+                    expression.value,
                 )
                 raise SystemExit(1)
             index_type = self.get_expression_type(expression.index)
             if not self.is_integer(index_type):
-                self.r.error(
-                    f"Array index must be an integer, got '{self.type_name(index_type)}'."
+                self.error(
+                    f"Array index must be an integer, got '{self.type_name(index_type)}'",
+                    expression.index,
                 )
                 raise SystemExit(1)
 
@@ -892,18 +927,21 @@ class CodeGenerator:
             _, function = self.lookup_function(expression.value)
 
             if len(function.results) == 0:
-                self.r.error(f"Function '{function.name}' does not return a value.")
+                self.error(
+                    f"Function '{function.name}' does not return a value", expression
+                )
                 raise SystemExit(1)
 
             if len(function.results) > 1:
-                self.r.error(
-                    f"Function '{function.name}' returns multiple values, which are not supported in expressions (yet)."
+                self.error(
+                    f"Function '{function.name}' returns multiple values, which are not supported in expressions",
+                    expression,
                 )
                 raise SystemExit(1)
 
             return function.results[0].type
 
-        self.r.error("Unsupported expression for type resolution.")
+        self.error("Unsupported expression for type resolution", expression)
         raise SystemExit(1)
 
     def gen_address(
@@ -917,7 +955,9 @@ class CodeGenerator:
 
             if symbol.range == SymbolRange.GLOBAL:
                 if not symbol.label:
-                    self.r.error(f"Global symbol '{symbol.name}' has no label.")
+                    self.error(
+                        f"Global symbol '{symbol.name}' has no label", expression
+                    )
                     raise SystemExit(1)
                 return MemAddress(label=symbol.label)
             else:
@@ -1047,7 +1087,7 @@ class CodeGenerator:
         elif isinstance(expression, MemberAccess):
             if expression.type == MemberAccessType.PACKAGE:
                 if not isinstance(expression.value, Name):
-                    self.r.error("Package name must be an identifier.")
+                    self.error("Package name must be an identifier", expression)
                     raise SystemExit(1)
 
                 prefix = expression.value.value
@@ -1062,16 +1102,20 @@ class CodeGenerator:
 
                 pkg_globals = self.package_globals.get(pkg_name)
                 if not pkg_globals:
-                    self.r.error(f"Package '{pkg_name}' not found.")
+                    self.error(f"Package '{pkg_name}' not found", expression)
                     raise SystemExit(1)
 
                 if var_name not in pkg_globals:
-                    self.r.error(f"Global variable '{pkg_name}.{var_name}' not found.")
+                    self.error(
+                        f"Global variable '{pkg_name}.{var_name}' not found", expression
+                    )
                     raise SystemExit(1)
 
                 symbol = pkg_globals[var_name]
                 if not symbol.label:
-                    self.r.error(f"Global symbol '{symbol.name}' has no label.")
+                    self.error(
+                        f"Global symbol '{symbol.name}' has no label", expression
+                    )
                     raise SystemExit(1)
                 return MemAddress(label=symbol.label)
 
@@ -1083,7 +1127,7 @@ class CodeGenerator:
                     not isinstance(base_type.base_type, str)
                     or base_type.pointer_depth > 0
                 ):
-                    self.r.error("Base expression is not a struct.")
+                    self.error("Base expression is not a struct", expression)
                     raise SystemExit(1)
 
                 struct_name = base_type.base_type
@@ -1098,8 +1142,9 @@ class CodeGenerator:
                     return MemAddress(label=f"({base_addr.label} + {field_offset})")
 
                 if base_addr.register is None:
-                    self.r.error(
-                        "Base address must have a register if it has no label."
+                    self.error(
+                        "Base address must have a register if it has no label",
+                        expression,
                     )
                     raise SystemExit(1)
 
@@ -1130,14 +1175,14 @@ class CodeGenerator:
                 self.allocator.reg_free(offset_reg)
                 return MemAddress(register=target_reg)
 
-            self.r.error("Invalid member access kind.")
+            self.error("Invalid member access kind", expression)
             raise SystemExit(1)
 
         elif isinstance(expression, Operation1) and expression.op == "*":
             ptr_reg = self.gen_expression(expression.value, RegisterType.A)
             return MemAddress(register=ptr_reg)
 
-        self.r.error("Invalid left value")
+        self.error("Invalid left value", expression)
         raise SystemExit(1)
 
     # ---------------
@@ -1149,13 +1194,14 @@ class CodeGenerator:
         function: Function,
     ) -> tuple[dict[Register, RegisterState], set[Register], list[Register]]:
         if len(expression.args) != len(function.params):
-            self.r.error(
-                f"Function '{function.name}' expects {len(function.params)} arguments, got {len(expression.args)}."
+            self.error(
+                f"Function '{function.name}' expects {len(function.params)} arguments, got {len(expression.args)}",
+                expression,
             )
             raise SystemExit(1)
 
         if len(function.params) > len(ARGUMENT_REGISTERS):
-            self.r.error(f"Function '{function.name}' has too many arguments.")
+            self.error(f"Function '{function.name}' has too many arguments", expression)
             raise SystemExit(1)
 
         saved_reg_states, saved_locked_regs = self.save_allocator_state()
@@ -1201,11 +1247,11 @@ class CodeGenerator:
         self.allocator.reg_unlock_and_reset_states()
 
         if len(function.params) > len(ARGUMENT_REGISTERS):
-            self.r.error(f"Function '{function.name}' has too many parameters.")
+            self.error(f"Function '{function.name}' has too many parameters", function)
             raise SystemExit(1)
 
         if len(function.results) > len(RESULT_REGISTERS):
-            self.r.error(f"Function '{function.name}' has too many results.")
+            self.error(f"Function '{function.name}' has too many results", function)
             raise SystemExit(1)
 
         self.emit(f"_fun__{package}__{function.name}:")
@@ -1224,8 +1270,8 @@ class CodeGenerator:
                 param.type, self.current_package, self.current_file_ast
             )
             if size != 1 or self.is_array(param.type) or self.is_struct(param.type):
-                self.r.error(
-                    f"Function parameter '{param.name}' must fit in one register."
+                self.error(
+                    f"Function parameter '{param.name}' must fit in one register", param
                 )
                 raise SystemExit(1)
 
@@ -1244,8 +1290,8 @@ class CodeGenerator:
                 result.type, self.current_package, self.current_file_ast
             )
             if size != 1 or self.is_array(result.type) or self.is_struct(result.type):
-                self.r.error(
-                    f"Function result '{result.name}' must fit in one register."
+                self.error(
+                    f"Function result '{result.name}' must fit in one register", result
                 )
                 raise SystemExit(1)
 
@@ -1317,18 +1363,20 @@ class CodeGenerator:
         target_package, function = self.lookup_function(call.value)
 
         if len(function.results) == 0:
-            self.r.error(f"Function '{function.name}' does not return any values.")
+            self.error(f"Function '{function.name}' does not return any values", call)
             raise SystemExit(1)
 
         if len(function.results) == 1:
-            self.r.error(
-                f"Function '{function.name}' returns a single value; use a normal assignment instead."
+            self.error(
+                f"Function '{function.name}' returns a single value",
+                call,
             )
             raise SystemExit(1)
 
         if len(targets) != len(function.results):
-            self.r.error(
-                f"Function '{function.name}' returns {len(function.results)} values, but assignment has {len(targets)} targets."
+            self.error(
+                f"Function '{function.name}' returns {len(function.results)} values, but assignment has {len(targets)} targets",
+                call,
             )
             raise SystemExit(1)
 
@@ -1336,8 +1384,8 @@ class CodeGenerator:
             if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
                 isinstance(target_expr, Operation1) and target_expr.op == "*"
             ):
-                self.r.error(
-                    "Assignments to complex structures are not supported (yet)."  # TODO
+                self.error(
+                    "Assignments to complex structures are not supported", target_expr
                 )
                 raise SystemExit(1)
 
@@ -1383,8 +1431,8 @@ class CodeGenerator:
             for s in statement.statements:
                 if isinstance(s, Variable):
                     if s.name in self.scopes[-1]:
-                        self.r.error(
-                            f"Duplicate declaration of '{s.name}' in current scope."
+                        self.error(
+                            f"Duplicate declaration of '{s.name}' in current scope", s
                         )
                         raise SystemExit(1)
 
@@ -1444,8 +1492,9 @@ class CodeGenerator:
 
             if len(statement.targets) > 1:
                 if not isinstance(statement.value, Call):
-                    self.r.error(
-                        "Multiple assignment requires a function call on the right side."
+                    self.error(
+                        "Multiple assignment requires a function call on the right side",
+                        statement.value,
                     )
                     raise SystemExit(1)
                 self.gen_multi_result_assign(statement.targets, statement.value)
@@ -1455,16 +1504,17 @@ class CodeGenerator:
             if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
                 isinstance(target_expr, Operation1) and target_expr.op == "*"
             ):
-                self.r.error(
-                    "Assignments to complex structures are not supported (yet)."  # TODO
+                self.error(
+                    "Assignments to complex structures are not supported", target_expr
                 )
                 raise SystemExit(1)
 
             if isinstance(statement.value, Call):
                 _, function = self.lookup_function(statement.value.value)
                 if len(function.results) > 1:
-                    self.r.error(
-                        f"Function '{function.name}' returns multiple values; use the same number of assignment targets."
+                    self.error(
+                        f"Function '{function.name}' returns multiple values",
+                        statement.value,
                     )
                     raise SystemExit(1)
 
@@ -1488,7 +1538,7 @@ class CodeGenerator:
                 )
                 self.allocator.reg_free(addr.register)
             else:
-                self.r.error("Invalid memory address.")
+                self.error("Invalid memory address", statement)
                 raise SystemExit(1)
             self.allocator.reg_free(value_reg)
 
@@ -1527,7 +1577,7 @@ class CodeGenerator:
 
         elif isinstance(statement, Break):
             if not self.loop_stack:
-                self.r.error("Cannot 'break' outside of a loop.")
+                self.error("Cannot 'continue' outside of a loop", statement)
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
             self.unwind_stack_to(loop_start_offset)
@@ -1535,7 +1585,7 @@ class CodeGenerator:
 
         elif isinstance(statement, Continue):
             if not self.loop_stack:
-                self.r.error("Cannot 'continue' outside of a loop.")
+                self.error("Cannot 'continue' outside of a loop", statement)
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
             self.unwind_stack_to(loop_start_offset)
@@ -1551,11 +1601,14 @@ class CodeGenerator:
 
     def gen_condition(self, expression: Expression, false_jump_label: str):
         if not isinstance(expression, Operation2):
-            self.r.error("Condition must be a comparison operation.")
+            self.error("Condition must be a comparison operation", expression)
             raise SystemExit(1)
 
         if expression.op not in ("==", "!=", "<", "<=", ">", ">="):
-            self.r.error(f"Operation '{expression.op}' is not supported in conditions.")
+            self.error(
+                f"Operation '{expression.op}' is not supported in conditions",
+                expression,
+            )
             raise SystemExit(1)
 
         left_type = self.get_expression_type(expression.left)
@@ -1591,7 +1644,7 @@ class CodeGenerator:
         else:
             base_type = cmp_type.base_type
             if not isinstance(base_type, IntType):
-                self.r.error("Comparison type must be an integer type.")
+                self.error("Comparison type must be an integer type", expression)
                 raise SystemExit(1)
 
             if base_type == IntType.I16:
@@ -1637,8 +1690,9 @@ class CodeGenerator:
                 parsed_str = expression.value.strip('"')
 
             if len(parsed_str) != 1:
-                self.r.error(
-                    "String literals used in expressions must be exactly 1 character long."
+                self.error(
+                    "String literals used in expressions must be exactly 1 character long",
+                    expression,
                 )
                 raise SystemExit(1)
 
@@ -1649,10 +1703,15 @@ class CodeGenerator:
         elif isinstance(expression, (Name, MemberAccess, Index)):
             expr_type = self.get_expression_type(expression)
             if self.is_array(expr_type):
-                self.r.error(f"{self.type_name(expr_type)} cannot be an array.")
+                self.error(
+                    f"'{self.type_name(expr_type)}' cannot be an array", expression
+                )
                 raise SystemExit(1)
             if self.is_struct(expr_type):
-                self.r.error(f"{self.type_name(expr_type)} cannot be a struct value.")
+                self.error(
+                    f"'{self.type_name(expr_type)}' cannot be a struct value",
+                    expression,
+                )
                 raise SystemExit(1)
 
             addr = self.gen_address(expression)
@@ -1680,7 +1739,7 @@ class CodeGenerator:
                         )
                     self.allocator.reg_free(addr.register)
                 else:
-                    self.r.error("Invalid memory address.")
+                    self.error("Invalid memory address", expression)
                     raise SystemExit(1)
                 return target
 
@@ -1696,8 +1755,9 @@ class CodeGenerator:
             elif expression.op == "!":
                 value_type = self.get_expression_type(expression.value)
                 if not self.is_integer(value_type):
-                    self.r.error(
-                        f"Operand '!' must be an integer, got {self.type_name(value_type)}."
+                    self.error(
+                        f"Operand '!' must be an integer, got '{self.type_name(value_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
 
@@ -1714,8 +1774,9 @@ class CodeGenerator:
             elif expression.op == "-":
                 value_type = self.get_expression_type(expression.value)
                 if not self.is_integer(value_type):
-                    self.r.error(
-                        f"Operand '-' must be an integer, got {self.type_name(value_type)}."
+                    self.error(
+                        f"Operand '-' must be an integer, got '{self.type_name(value_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
 
@@ -1731,7 +1792,7 @@ class CodeGenerator:
                 return zero_reg
 
             else:
-                self.r.error(f"Operation '{expression.op}' is not supported.")
+                self.error(f"Operation '{expression.op}' is not supported", expression)
                 raise SystemExit(1)
 
         elif isinstance(expression, Operation2):
@@ -1784,16 +1845,17 @@ class CodeGenerator:
             elif expression.op in shifts:
                 left_type = self.get_expression_type(expression.left)
                 if not self.is_integer(left_type):
-                    self.r.error(
-                        f"Left operand of '{expression.op}' must be an integer, got {self.type_name(left_type)}."
+                    self.error(
+                        f"Left operand of '{expression.op}' must be an integer, got '{self.type_name(left_type)}'",
+                        expression,
                     )
                     raise SystemExit(1)
 
                 if not isinstance(expression.right, Number):
-                    self.r.error("Dynamic shifts is not supported (yet).")  # TODO
+                    self.error("Dynamic shifts is not supported", expression)
                     raise SystemExit(1)
                 if expression.right.value >= 16:
-                    self.r.error("You can't shift by 16 bits or more.")
+                    self.error("You can't shift by 16 bits or more", expression)
                     raise SystemExit(1)
                 if expression.right.value == 0:
                     return self.gen_expression(expression.left, target_register_type)
@@ -1840,16 +1902,17 @@ class CodeGenerator:
                 return target
 
             else:
-                self.r.error(f"Operation '{expression.op}' is not supported.")
+                self.error(f"Operation '{expression.op}' is not supported", expression)
                 raise SystemExit(1)
 
         elif isinstance(expression, Call):
             target_package, function = self.lookup_function(expression.value)
 
             if len(function.results) > 1:
-                self.r.error(
-                    f"Function '{function.name}' returns multiple values, which are not supported in expressions (yet)."
-                )  # TODO
+                self.error(
+                    f"Function '{function.name}' returns multiple values, which are not supported in expressions",
+                    expression,
+                )
                 raise SystemExit(1)
 
             saved_reg_states, saved_locked_regs = self.save_allocator_state()
@@ -1879,15 +1942,7 @@ class CodeGenerator:
             self.allocator.locked_regs.discard(result_target)
             return result_target
 
-        elif isinstance(expression, ArrayValue):
-            self.r.error("ArrayValue is not supported (yet).")  # TODO
-            raise SystemExit(1)
-
-        elif isinstance(expression, StructValue):
-            self.r.error("StructValue is not supported (yet).")  # TODO
-            raise SystemExit(1)
-
-        self.r.error("Unsupported expression.")
+        self.error("Unsupported expression", expression)
         raise SystemExit(1)
 
     # ---------------
@@ -1931,8 +1986,9 @@ class CodeGenerator:
             for file_ast in files_ast:
                 for global_var in file_ast.global_variables:
                     if global_var.name in globals_map:
-                        self.r.error(
-                            f"Duplicate global variable '{global_var.name}' in package '{package}'."
+                        self.error(
+                            f"Duplicate global variable '{global_var.name}' in package '{package}'",
+                            global_var,
                         )
                         raise SystemExit(1)
 
@@ -1956,15 +2012,17 @@ class CodeGenerator:
 
                         elif isinstance(global_var.value, ArrayValue):
                             if len(global_var.value.values) > size:
-                                self.r.error(
-                                    f"Array initializer for '{global_var.name}' has more elements ({len(global_var.value.values)}) than declared size ({size})."
+                                self.error(
+                                    f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared size '{size}'",
+                                    global_var,
                                 )
                                 raise SystemExit(1)
 
                             for val in global_var.value.values:
                                 if not isinstance(val, Number):
-                                    self.r.error(
-                                        f"Global array values for '{global_var.name}' must be constant numbers."
+                                    self.error(
+                                        f"Global array values for '{global_var.name}' must be constant numbers",
+                                        global_var,
                                     )
                                     raise SystemExit(1)
                                 self.emit(f"\t#d16 {val.value}")
@@ -1979,8 +2037,9 @@ class CodeGenerator:
                                 parsed_str = global_var.value.value.strip('"')
 
                             if len(parsed_str) > size:
-                                self.r.error(
-                                    f"String length ({len(parsed_str)}) for '{global_var.name}' exceeds declared array size ({size})."
+                                self.error(
+                                    f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared array size '{size}'",
+                                    global_var,
                                 )
                                 raise SystemExit(1)
 
@@ -1991,8 +2050,9 @@ class CodeGenerator:
                                 self.emit("\t#d16 0")
 
                         else:
-                            self.r.error(
-                                f"Global initializer for '{global_var.name}' must be a constant number, array, or string."
+                            self.error(
+                                f"Global initializer for '{global_var.name}' must be a constant number, array, or string",
+                                global_var,
                             )
                             raise SystemExit(1)
                     else:
