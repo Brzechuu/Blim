@@ -2225,9 +2225,9 @@ class CodeGenerator:
                 self.emit("")
                 self.emit("; ------- SYSCALL VECTOR TABLE -------")
             if i in interrupt_map:
-                self.emit(f"#d16 {interrupt_map[i]} ; Vector {i}")
+                self.emit(f"\t#d16 {interrupt_map[i]} ; Vector {i}")
             else:
-                self.emit(f"#d16 unhandled ; Vector {i}")
+                self.emit(f"\t#d16 unhandled ; Vector {i}")
         self.emit()
 
         self.emit("unhandled:")
