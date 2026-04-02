@@ -1555,6 +1555,7 @@ class CodeGenerator:
                     )
                     raise SystemExit(1)
 
+            statement.value = self.optimize_math(statement.value)
             target_type = self.get_expression_type(target_expr)
             value_type = self.get_expression_type(statement.value)
 
@@ -1564,6 +1565,53 @@ class CodeGenerator:
                 value_type=value_type,
                 context="assignment",
             )
+
+            if isinstance(statement.value, Operation1) and statement.value.op in (
+                "!",
+                "-",
+            ):
+                is_same_target = False
+                if isinstance(target_expr, Name) and isinstance(
+                    statement.value.value, Name
+                ):
+                    if target_expr.value == statement.value.value.value:
+                        is_same_target = True
+
+                if is_same_target:
+                    addr = self.gen_address(target_expr)
+
+                    val_reg = self.allocator.reg_alloc(RegisterType.B)
+                    reg_str = self.allocator.reg_name(val_reg)
+
+                    if addr.label is not None:
+                        self.emit(f"\tload {addr.label}, {reg_str}")
+                    elif addr.register is not None:
+                        self.emit(
+                            f"\tload [{self.allocator.reg_name(addr.register)}], {reg_str}"
+                        )
+
+                    if statement.value.op == "!":
+                        self.emit(f"\tnot {reg_str}, {reg_str}")
+                    elif statement.value.op == "-":
+                        zero_reg = self.allocator.reg_alloc(RegisterType.A)
+                        self.emit(f"\tmov r0, {self.allocator.reg_name(zero_reg)}")
+                        self.emit(
+                            f"\tsub {self.allocator.reg_name(zero_reg)}, {reg_str}, {reg_str}"
+                        )
+                        self.allocator.reg_free(zero_reg)
+
+                    if addr.label is not None:
+                        self.emit(f"\tstore {reg_str}, {addr.label}")
+                    elif addr.register is not None:
+                        self.emit(
+                            f"\tstore {reg_str}, [{self.allocator.reg_name(addr.register)}]"
+                        )
+
+                    self.allocator.reg_free(val_reg)
+                    if addr.register is not None:
+                        self.allocator.reg_free(addr.register)
+
+                    return
 
             value_reg = self.gen_expression(statement.value, RegisterType.B)
             addr = self.gen_address(target_expr, avoid={value_reg})
@@ -1877,6 +1925,10 @@ class CodeGenerator:
                 raise SystemExit(1)
 
         elif isinstance(expression, Operation2):
+            optimized_expr = self.optimize_math(expression)
+            if optimized_expr is not expression:
+                return self.gen_expression(optimized_expr, target_register_type)
+
             basic_ops = {
                 "+": "add",
                 "-": "sub",
@@ -2025,6 +2077,123 @@ class CodeGenerator:
 
         self.error("Unsupported expression", expression)
         raise SystemExit(1)
+
+    def optimize_math(self, expr: Expression) -> Expression:
+        if not isinstance(expr, (Operation1, Operation2)):
+            return expr
+
+        if isinstance(expr, Operation1):
+            val = self.optimize_math(expr.value)
+            expr.value = val
+            if isinstance(val, Number):
+                if expr.op == "-":
+                    return Number(expr.line, expr.column, (-val.value) & 0xFFFF)
+                elif expr.op == "!":
+                    return Number(expr.line, expr.column, (~val.value) & 0xFFFF)
+            return expr
+
+        left = self.optimize_math(expr.left)
+        right = self.optimize_math(expr.right)
+        expr.left = left
+        expr.right = right
+
+        if expr.op in ("+", "-"):
+            const_val, terms = self.flat_math(expr, 1)
+
+            node = None
+            for s, t in terms:
+                if node is None:
+                    if s == 1:
+                        node = t
+                    else:
+                        node = Operation2(
+                            expr.line,
+                            expr.column,
+                            "-",
+                            Number(expr.line, expr.column, 0),
+                            t,
+                        )
+                else:
+                    op = "+" if s == 1 else "-"
+                    node = Operation2(expr.line, expr.column, op, node, t)
+
+            if const_val != 0 or node is None:
+                if node is None:
+                    node = Number(expr.line, expr.column, const_val & 0xFFFF)
+                elif const_val > 0:
+                    node = Operation2(
+                        expr.line,
+                        expr.column,
+                        "+",
+                        node,
+                        Number(expr.line, expr.column, const_val & 0xFFFF),
+                    )
+                else:
+                    node = Operation2(
+                        expr.line,
+                        expr.column,
+                        "-",
+                        node,
+                        Number(expr.line, expr.column, (-const_val) & 0xFFFF),
+                    )
+
+            if self._count_nodes(node) < self._count_nodes(expr):
+                return node
+
+        if isinstance(left, Number) and isinstance(right, Number):
+            l_val = left.value
+            r_val = right.value
+            res = None
+
+            if expr.op == "&":
+                res = l_val & r_val
+            elif expr.op == "|":
+                res = l_val | r_val
+            elif expr.op == "^":
+                res = l_val ^ r_val
+            elif expr.op == "*":
+                res = l_val * r_val
+            elif expr.op == "<<":
+                res = l_val << r_val if r_val >= 0 else 0
+            elif expr.op == ">>":
+                res = l_val >> r_val if r_val >= 0 else 0
+            elif expr.op == "<<<" and r_val >= 0:
+                res = (l_val << r_val) | (l_val >> (16 - r_val))
+            elif expr.op == ">>>" and r_val >= 0:
+                res = (l_val >> r_val) | (l_val << (16 - r_val))
+            elif expr.op == "!&":
+                res = ~(l_val & r_val)
+            elif expr.op == "!|":
+                res = ~(l_val | r_val)
+            elif expr.op == "!^":
+                res = ~(l_val ^ r_val)
+
+            if res is not None:
+                return Number(expr.line, expr.column, res & 0xFFFF)
+
+        return expr
+
+    def flat_math(
+        self, expr: Expression, sign: int
+    ) -> tuple[int, list[tuple[int, Expression]]]:
+        if isinstance(expr, Number):
+            return expr.value * sign, []
+        elif isinstance(expr, Operation2) and expr.op in ("+", "-"):
+            l_const, l_terms = self.flat_math(expr.left, sign)
+            r_sign = sign if expr.op == "+" else -sign
+            r_const, r_terms = self.flat_math(expr.right, r_sign)
+            return l_const + r_const, l_terms + r_terms
+        elif isinstance(expr, Operation1) and expr.op == "-":
+            return self.flat_math(expr.value, -sign)
+        else:
+            return 0, [(sign, expr)]
+
+    def _count_nodes(self, expr: Expression) -> int:
+        if isinstance(expr, Operation2):
+            return 1 + self._count_nodes(expr.left) + self._count_nodes(expr.right)
+        if isinstance(expr, Operation1):
+            return 1 + self._count_nodes(expr.value)
+        return 1
 
     # ---------------
 
