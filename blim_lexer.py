@@ -99,7 +99,7 @@ class Lexer:
         }
 
         rules = [
-            ("COMMENT", r"//.*"),
+            ("COMMENT", r";.*"),
             ("WHITESPACE", r"[ \t\r]+"),
             ("NEW_LINE", r"\n"),
             ("HASH_DIRECTIVE", r"#[a-zA-Z_]+"),
