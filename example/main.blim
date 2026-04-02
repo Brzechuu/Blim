@@ -25,7 +25,7 @@ main: fun() {
     i: u16 = 0
     while(i < 13) {
         print(text[i])
-        i = i + 1
+        ++i
     }
     asm { hlt }
 }

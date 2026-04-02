@@ -339,6 +339,8 @@ class Parser:
             TokenType.BANG,
             TokenType.AMPERSAND,
             TokenType.STAR,
+            TokenType.PLUS_PLUS,
+            TokenType.MINUS_MINUS,
         ]:
             operator = token.value
             operand = self.parse_expression(10)

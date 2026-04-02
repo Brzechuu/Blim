@@ -33,6 +33,8 @@ class TokenType(Enum):
     MORE_EQUAL = auto()  # >=
     PLUS = auto()  # +
     MINUS = auto()  # -
+    PLUS_PLUS = auto()  # ++
+    MINUS_MINUS = auto()  # --
     STAR = auto()  # *
     BANG_AMPERSAND = auto()  # !&
     BANG_PIPE = auto()  # !|
@@ -116,6 +118,8 @@ class Lexer:
             ("LEFT_SHIFT", r"<<"),
             ("RIGHT_SHIFT", r">>"),
             ("ARROW", r"->"),
+            ("PLUS_PLUS", r"\+\+"),
+            ("MINUS_MINUS", r"--"),
             ("ASSIGN", r"="),
             ("LESS", r"<"),
             ("MORE", r">"),

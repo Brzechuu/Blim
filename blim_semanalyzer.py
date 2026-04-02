@@ -339,6 +339,20 @@ class SemanticAnalyzer:
                 )
 
         elif isinstance(expression, Operation1):
+            if expression.op in ("++", "--"):
+                if not isinstance(
+                    expression.value, (Name, MemberAccess, Index)
+                ) and not (
+                    isinstance(expression.value, Operation1)
+                    and expression.value.op == "*"
+                ):
+                    self.r.error(
+                        f"Operand of '{expression.op}' must be an assignable variable",
+                        file_ast.path,
+                        expression.line,
+                        expression.column,
+                    )
+
             self.analyze_expression(expression.value, scopes, env, packages, file_ast)
 
         elif isinstance(expression, Operation2):

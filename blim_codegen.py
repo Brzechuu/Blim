@@ -848,13 +848,25 @@ class CodeGenerator:
                 )
 
             operand_type = self.get_expression_type(expression.value)
-            if expression.op in ("!", "-"):
+            if expression.op in ("!", "-", "++", "--"):
                 if not self.is_integer(operand_type):
                     self.error(
                         f"Operand '{expression.op}' must be an integer, got '{self.type_name(operand_type)}'",
                         expression,
                     )
                     raise SystemExit(1)
+                if expression.op in ("++", "--"):
+                    if not isinstance(
+                        expression.value, (Name, MemberAccess, Index)
+                    ) and not (
+                        isinstance(expression.value, Operation1)
+                        and expression.value.op == "*"
+                    ):
+                        self.error(
+                            f"Operand of '{expression.op}' must be an assignable variable",
+                            expression,
+                        )
+                        raise SystemExit(1)
                 return operand_type
 
             self.error(f"Operation '{expression.op}' is not supported", expression)
@@ -1790,6 +1802,50 @@ class CodeGenerator:
 
                 self.allocator.reg_free(value_reg)
                 return zero_reg
+
+            elif expression.op in ("++", "--"):
+                addr = self.gen_address(expression.value)
+
+                val_reg = self.allocator.reg_alloc(RegisterType.A)
+
+                assert val_reg is not None
+
+                if addr.label is not None:
+                    self.emit(
+                        f"\tload {addr.label}, {self.allocator.reg_name(val_reg)}"
+                    )
+                elif addr.register is not None:
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(val_reg)}"
+                    )
+                else:
+                    self.error("Invalid memory address", expression)
+                    raise SystemExit(1)
+
+                reg_str = self.allocator.reg_name(val_reg)
+                if expression.op == "++":
+                    self.emit(f"\tinc {reg_str}, {reg_str}")
+                else:
+                    self.emit(f"\tdec {reg_str}, {reg_str}")
+
+                if addr.label is not None:
+                    self.emit(f"\tstore {reg_str}, {addr.label}")
+                else:
+                    assert addr.register is not None
+                    self.emit(
+                        f"\tstore {reg_str}, [{self.allocator.reg_name(addr.register)}]"
+                    )
+
+                target = self.allocator.reg_alloc(target_register_type)
+
+                if target != val_reg:
+                    self.emit(f"\tmov {reg_str}, {self.allocator.reg_name(target)}")
+
+                self.allocator.reg_free(val_reg)
+                if addr.register is not None:
+                    self.allocator.reg_free(addr.register)
+
+                return target
 
             else:
                 self.error(f"Operation '{expression.op}' is not supported", expression)
