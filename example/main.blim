@@ -9,19 +9,29 @@ Vector: struct {
     y: i16
 }
 
-vector1: Vector // global
+vector1: Vector = { 1, 2 }
+
+text: u16[13] = "Hello, World!"
 
 main: fun() {
-    vector2: Vector // local
-
-    vector1.x = 3
-    vector1.y = -2
+    vector2: Vector
 
     vector2.x = -1
     vector2.y = 5
 
-    result1: i16 = math.add_i16(vector1.x, vector1.y)
-    result2: i16 = vector2.x + vector2.y
+    sum_x: i16 = math.add_i16(vector1.x, vector2.x)
+    sum_y: i16 = vector1.y + vector2.y
 
-    return
+    i: u16 = 0
+    while(i < 13) {
+        print(text[i])
+        i = i + 1
+    }
+    asm { hlt }
+}
+
+print: fun(x: u16) {
+    asm {
+        out a0, r0
+    }
 }
