@@ -508,6 +508,12 @@ class CodeGenerator:
             if isinstance(value_expr, (Number, StringValue)):
                 return
 
+            self.warn(
+                f"Implicit conversion in {context}: '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
+                value_expr,
+            )
+            return  # Scary!
+
         self.error(
             f"Type mismatch in {context}: cannot assign '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
             value_expr,
