@@ -442,6 +442,11 @@ class CodeGenerator:
             )
             raise SystemExit(1)
 
+        if left_type.base_type == IntType.UNKNOWN:
+            return right_type
+        if right_type.base_type == IntType.UNKNOWN:
+            return left_type
+
         if left_type.base_type == right_type.base_type:
             return left_type
 
@@ -464,6 +469,12 @@ class CodeGenerator:
         value_type: Type,
         context: str,
     ):
+        if (
+            isinstance(value_type.base_type, IntType)
+            and value_type.base_type == IntType.UNKNOWN
+        ):
+            return
+
         if self.is_array(target_type):
             self.error(
                 f"'{self.type_name(target_type)}' target cannot be an array", value_expr
@@ -757,7 +768,9 @@ class CodeGenerator:
     def get_expression_type(self, expression: Expression) -> Type:
         if isinstance(expression, Number):
             return Type(
-                line=expression.line, column=expression.column, base_type=IntType.I16
+                line=expression.line,
+                column=expression.column,
+                base_type=IntType.UNKNOWN,
             )
 
         if isinstance(expression, StringValue):

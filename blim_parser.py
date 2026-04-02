@@ -7,6 +7,7 @@ from blim_reporter import Reporter
 
 
 class IntType(Enum):
+    UNKNOWN = auto()
     U8 = auto()
     U16 = auto()
     # I8 = auto()
