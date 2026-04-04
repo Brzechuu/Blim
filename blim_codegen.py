@@ -672,6 +672,8 @@ class CodeGenerator:
 
         if var_type.array_size:
             if isinstance(var_type.array_size, Number):
+                if var_type.base_type == IntType.U8:
+                    return base_size * ((var_type.array_size.value + 1) // 2)
                 return base_size * var_type.array_size.value
             else:
                 self.error("Array size must be a constant number", var_type)
@@ -993,6 +995,11 @@ class CodeGenerator:
         if avoid is None:
             avoid = set()
 
+        expr_type = self.get_expression_type(expression)
+        is_u8_memory = (
+            expr_type.base_type == IntType.U8 and expr_type.pointer_depth == 0
+        )
+
         if isinstance(expression, Name):
             symbol = self.lookup_variable(expression.value)
 
@@ -1002,9 +1009,21 @@ class CodeGenerator:
                         f"Global symbol '{symbol.name}' has no label", expression
                     )
                     raise SystemExit(1)
+
+                if is_u8_memory:
+                    reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
+                    self.emit(f"\tmov {symbol.label}, {self.allocator.reg_name(reg)}")
+                    self.emit(
+                        f"\tsll {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                    )
+                    return MemAddress(register=reg)
                 return MemAddress(label=symbol.label)
             else:
                 reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
+                if is_u8_memory:
+                    self.emit(
+                        f"\tsll {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                    )
                 return MemAddress(register=reg)
 
         elif isinstance(expression, Index):
@@ -1216,6 +1235,12 @@ class CodeGenerator:
                     f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
                 )
                 self.allocator.reg_free(offset_reg)
+
+                if is_u8_memory:
+                    self.emit(
+                        f"\tsll {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(target_reg)}"
+                    )
+
                 return MemAddress(register=target_reg)
 
             self.error("Invalid member access kind", expression)
@@ -1518,11 +1543,56 @@ class CodeGenerator:
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
                 addr = self.gen_address(Name(0, 0, statement.name), avoid={value_reg})
                 if addr.label is not None:
-                    self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
-                    )
+                    if (
+                        symbol.type.base_type == IntType.U8
+                        and symbol.type.pointer_depth == 0
+                    ):
+                        tmp_addr = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={value_reg}
+                        )
+                        self.emit(
+                            f"\tmov {addr.label}, {self.allocator.reg_name(tmp_addr)}"
+                        )
+                        self.emit(
+                            f"\tsrl {self.allocator.reg_name(tmp_addr)}, {self.allocator.reg_name(tmp_addr)}"
+                        )
+
+                        tmp_mask = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={value_reg, tmp_addr}
+                        )
+                        self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_mask)}")
+                        self.emit(
+                            f"\tand {self.allocator.reg_name(tmp_mask)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(value_reg)}"
+                        )
+                        self.allocator.reg_free(tmp_mask)
+
+                        self.emit(
+                            f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(tmp_addr)}]"
+                        )
+                        self.allocator.reg_free(tmp_addr)
+                    else:
+                        self.emit(
+                            f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
+                        )
                 else:
                     assert addr.register is not None
+                    if (
+                        symbol.type.base_type == IntType.U8
+                        and symbol.type.pointer_depth == 0
+                    ):
+                        self.emit(
+                            f"\tsrl {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(addr.register)}"
+                        )
+
+                        tmp_mask = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={value_reg, addr.register}
+                        )
+                        self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_mask)}")
+                        self.emit(
+                            f"\tand {self.allocator.reg_name(tmp_mask)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(value_reg)}"
+                        )
+                        self.allocator.reg_free(tmp_mask)
+
                     self.emit(
                         f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
                     )
@@ -1621,17 +1691,198 @@ class CodeGenerator:
 
             value_reg = self.gen_expression(statement.value, RegisterType.B)
             addr = self.gen_address(target_expr, avoid={value_reg})
-            if addr.label is not None:
-                self.emit(f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}")
-            elif addr.register is not None:
-                self.emit(
-                    f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+
+            if target_type.base_type == IntType.U8 and target_type.pointer_depth == 0:
+                byte_addr_reg = self.alloc_temp_register(
+                    (RegisterType.B,), avoid={value_reg}
                 )
-                self.allocator.reg_free(addr.register)
+                if addr.label is not None:
+                    self.emit(
+                        f"\tmov {addr.label}, {self.allocator.reg_name(byte_addr_reg)}"
+                    )
+                else:
+                    assert addr.register is not None
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(byte_addr_reg)}"
+                    )
+                    self.allocator.reg_free(addr.register)
+
+                word_addr = self.alloc_temp_register(
+                    (RegisterType.A,), avoid={value_reg, byte_addr_reg}
+                )
+                old_val = self.alloc_temp_register(
+                    (RegisterType.A,), avoid={value_reg, byte_addr_reg, word_addr}
+                )
+
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(word_addr)}"
+                )
+                self.emit(
+                    f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                )
+                self.emit(
+                    f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(old_val)}"
+                )
+
+                id_lbl = self.statement_id()
+
+                tmp_a = self.alloc_temp_register(
+                    (RegisterType.A,),
+                    avoid={value_reg, byte_addr_reg, word_addr, old_val},
+                )
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(tmp_a)}"
+                )
+
+                tmp_b = self.alloc_temp_register(
+                    (RegisterType.B,),
+                    avoid={value_reg, byte_addr_reg, word_addr, old_val, tmp_a},
+                )
+                self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+
+                self.emit(
+                    f"\tand {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_a)}"
+                )
+                self.emit(f"\tjmp zr, .store_low_{id_lbl}")
+
+                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tand {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(old_val)}"
+                )
+
+                val_as_a = value_reg
+                if self.allocator.reg_type(value_reg) != RegisterType.A:
+                    val_as_a = self.alloc_temp_register(
+                        (RegisterType.A,),
+                        avoid={
+                            value_reg,
+                            byte_addr_reg,
+                            word_addr,
+                            old_val,
+                            tmp_a,
+                            tmp_b,
+                        },
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(val_as_a)}"
+                    )
+
+                self.emit(
+                    f"\tand {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(val_as_a)}"
+                )
+                self.emit(
+                    f"\tsll8 {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_a)}"
+                )
+
+                val_as_b = val_as_a
+                if self.allocator.reg_type(val_as_a) != RegisterType.B:
+                    val_as_b = self.alloc_temp_register(
+                        (RegisterType.B,),
+                        avoid={
+                            value_reg,
+                            byte_addr_reg,
+                            word_addr,
+                            old_val,
+                            tmp_a,
+                            tmp_b,
+                            val_as_a,
+                        },
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_b)}"
+                    )
+
+                self.emit(
+                    f"\tor {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(val_as_b)}, {self.allocator.reg_name(old_val)}"
+                )
+
+                if val_as_a != value_reg:
+                    self.allocator.reg_free(val_as_a)
+                if val_as_b != val_as_a and val_as_b != value_reg:
+                    self.allocator.reg_free(val_as_b)
+
+                self.emit(f"\tjmp .store_done_{id_lbl}")
+
+                self.emit(f".store_low_{id_lbl}:")
+                self.emit(f"\tmov 0xFF00, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tand {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(old_val)}"
+                )
+
+                val_as_a = value_reg
+                if self.allocator.reg_type(value_reg) != RegisterType.A:
+                    val_as_a = self.alloc_temp_register(
+                        (RegisterType.A,),
+                        avoid={
+                            value_reg,
+                            byte_addr_reg,
+                            word_addr,
+                            old_val,
+                            tmp_a,
+                            tmp_b,
+                        },
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(val_as_a)}"
+                    )
+
+                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                self.emit(
+                    f"\tand {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(val_as_a)}"
+                )
+
+                val_as_b = val_as_a
+                if self.allocator.reg_type(val_as_a) != RegisterType.B:
+                    val_as_b = self.alloc_temp_register(
+                        (RegisterType.B,),
+                        avoid={
+                            value_reg,
+                            byte_addr_reg,
+                            word_addr,
+                            old_val,
+                            tmp_a,
+                            tmp_b,
+                            val_as_a,
+                        },
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_b)}"
+                    )
+
+                self.emit(
+                    f"\tor {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(val_as_b)}, {self.allocator.reg_name(old_val)}"
+                )
+
+                if val_as_a != value_reg:
+                    self.allocator.reg_free(val_as_a)
+                if val_as_b != val_as_a and val_as_b != value_reg:
+                    self.allocator.reg_free(val_as_b)
+
+                self.emit(f".store_done_{id_lbl}:")
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(old_val)}, [{self.allocator.reg_name(word_addr)}]"
+                )
+
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+                self.allocator.reg_free(byte_addr_reg)
+                self.allocator.reg_free(word_addr)
+                self.allocator.reg_free(old_val)
+                self.allocator.reg_free(value_reg)
             else:
-                self.error("Invalid memory address", statement)
-                raise SystemExit(1)
-            self.allocator.reg_free(value_reg)
+                if addr.label is not None:
+                    self.emit(
+                        f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
+                    )
+                elif addr.register is not None:
+                    self.emit(
+                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                    )
+                    self.allocator.reg_free(addr.register)
+                else:
+                    self.error("Invalid memory address", statement)
+                    raise SystemExit(1)
+                self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
             self.emit("\tjmp .return")
@@ -1807,15 +2058,86 @@ class CodeGenerator:
 
             addr = self.gen_address(expression)
             target = self.allocator.reg_alloc(target_register_type)
-            if addr.label is not None:
-                self.emit(f"\tload [{addr.label}], {self.allocator.reg_name(target)}")
-            else:
-                assert addr.register is not None
-                self.emit(
-                    f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(target)}"
+
+            if expr_type.base_type == IntType.U8 and expr_type.pointer_depth == 0:
+                word_addr = self.alloc_temp_register((RegisterType.A,), avoid={target})
+                byte_addr_reg = self.alloc_temp_register(
+                    (RegisterType.B,), avoid={target, word_addr}
                 )
-                self.allocator.reg_free(addr.register)
-            return target
+
+                if addr.label is not None:
+                    self.emit(
+                        f"\tmov {addr.label}, {self.allocator.reg_name(byte_addr_reg)}"
+                    )
+                else:
+                    assert addr.register is not None
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(byte_addr_reg)}"
+                    )
+                    self.allocator.reg_free(addr.register)
+
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(word_addr)}"
+                )
+                self.emit(
+                    f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                )
+                self.emit(
+                    f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(target)}"
+                )
+                self.allocator.reg_free(word_addr)
+
+                id_lbl = self.statement_id()
+                tmp_a = self.alloc_temp_register(
+                    (RegisterType.A,), avoid={target, byte_addr_reg}
+                )
+                self.emit(
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(tmp_a)}"
+                )
+
+                tmp_b = self.alloc_temp_register(
+                    (RegisterType.B,), avoid={target, tmp_a}
+                )
+                self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+
+                self.emit(
+                    f"\tand {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_a)}"
+                )
+                self.emit(f"\tjmp zr, .is_low_{id_lbl}")
+                self.emit(
+                    f"\tsrl8 {self.allocator.reg_name(target)}, {self.allocator.reg_name(target)}"
+                )
+                self.emit(f".is_low_{id_lbl}:")
+
+                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                target_as_a = target
+                if self.allocator.reg_type(target) != RegisterType.A:
+                    target_as_a = tmp_a
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(target)}, {self.allocator.reg_name(target_as_a)}"
+                    )
+
+                self.emit(
+                    f"\tand {self.allocator.reg_name(target_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(target)}"
+                )
+
+                self.allocator.reg_free(tmp_a)
+                self.allocator.reg_free(tmp_b)
+                self.allocator.reg_free(byte_addr_reg)
+                return target
+
+            else:
+                if addr.label is not None:
+                    self.emit(
+                        f"\tload [{addr.label}], {self.allocator.reg_name(target)}"
+                    )
+                else:
+                    assert addr.register is not None
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(target)}"
+                    )
+                    self.allocator.reg_free(addr.register)
+                return target
 
         elif isinstance(expression, Operation1):
             if expression.op == "&":
@@ -1837,11 +2159,84 @@ class CodeGenerator:
             elif expression.op == "*":
                 ptr_reg = self.gen_expression(expression.value, RegisterType.A)
                 target = self.allocator.reg_alloc(target_register_type)
-                self.emit(
-                    f"\tload [{self.allocator.reg_name(ptr_reg)}], {self.allocator.reg_name(target)}"
-                )
-                self.allocator.reg_free(ptr_reg)
-                return target
+
+                expr_type = self.get_expression_type(expression)
+
+                if expr_type.base_type == IntType.U8 and expr_type.pointer_depth == 0:
+                    word_addr = self.alloc_temp_register(
+                        (RegisterType.A,), avoid={target, ptr_reg}
+                    )
+                    self.emit(
+                        f"\tmov {self.allocator.reg_name(ptr_reg)}, {self.allocator.reg_name(word_addr)}"
+                    )
+                    self.emit(
+                        f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                    )
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(target)}"
+                    )
+                    self.allocator.reg_free(word_addr)
+
+                    id_lbl = self.statement_id()
+
+                    tmp_b = self.alloc_temp_register(
+                        (RegisterType.B,), avoid={target, ptr_reg}
+                    )
+                    self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+
+                    ptr_as_a = ptr_reg
+                    if self.allocator.reg_type(ptr_reg) != RegisterType.A:
+                        ptr_as_a = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={target, ptr_reg, tmp_b}
+                        )
+                        self.emit(
+                            f"\tmov {self.allocator.reg_name(ptr_reg)}, {self.allocator.reg_name(ptr_as_a)}"
+                        )
+
+                    tmp_result = self.alloc_temp_register(
+                        (RegisterType.A,), avoid={target, ptr_reg, tmp_b, ptr_as_a}
+                    )
+
+                    self.emit(
+                        f"\tand {self.allocator.reg_name(ptr_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_result)}"
+                    )
+                    self.allocator.reg_free(tmp_result)
+                    if ptr_as_a != ptr_reg:
+                        self.allocator.reg_free(ptr_as_a)
+
+                    self.emit(f"\tjmp zr, .is_low_{id_lbl}")
+
+                    self.emit(
+                        f"\tsrl8 {self.allocator.reg_name(target)}, {self.allocator.reg_name(target)}"
+                    )
+                    self.emit(f".is_low_{id_lbl}:")
+
+                    self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                    target_as_a = target
+                    if self.allocator.reg_type(target) != RegisterType.A:
+                        target_as_a = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={target, tmp_b}
+                        )
+                        self.emit(
+                            f"\tmov {self.allocator.reg_name(target)}, {self.allocator.reg_name(target_as_a)}"
+                        )
+
+                    self.emit(
+                        f"\tand {self.allocator.reg_name(target_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(target)}"
+                    )
+
+                    if target_as_a != target:
+                        self.allocator.reg_free(target_as_a)
+
+                    self.allocator.reg_free(tmp_b)
+                    self.allocator.reg_free(ptr_reg)
+                    return target
+                else:
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(ptr_reg)}], {self.allocator.reg_name(target)}"
+                    )
+                    self.allocator.reg_free(ptr_reg)
+                    return target
 
             elif expression.op == "!":
                 value_type = self.get_expression_type(expression.value)
@@ -2267,24 +2662,65 @@ class CodeGenerator:
                                 self.emit("\t#d16 0")
 
                         elif isinstance(global_var.value, ArrayValue):
-                            if len(global_var.value.values) > size:
-                                self.error(
-                                    f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared size '{size}'",
-                                    global_var,
-                                )
-                                raise SystemExit(1)
-
-                            for val in global_var.value.values:
-                                if not isinstance(val, Number):
+                            if global_var.type.base_type == IntType.U8:
+                                if len(global_var.value.values) > size * 2:
                                     self.error(
-                                        f"Global array values for '{global_var.name}' must be constant numbers",
+                                        f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared capacity '{size * 2}'",
                                         global_var,
                                     )
                                     raise SystemExit(1)
-                                self.emit(f"\t#d16 {val.value}")
 
-                            for _ in range(size - len(global_var.value.values)):
-                                self.emit("\t#d16 0")
+                                byte_values = []
+                                for val in global_var.value.values:
+                                    if not isinstance(val, Number):
+                                        self.error(
+                                            f"Global u8 array '{global_var.name}' requires constant numeric elements",
+                                            val,
+                                        )
+                                        raise SystemExit(1)
+                                    if val.value < 0 or val.value > 255:
+                                        self.error(
+                                            f"Value {val.value} out of range for u8",
+                                            val,
+                                        )
+                                        raise SystemExit(1)
+                                    byte_values.append(val.value)
+
+                                packed_words = []
+                                for idx in range(0, len(byte_values), 2):
+                                    low = byte_values[idx] & 0xFF
+                                    high = (
+                                        (byte_values[idx + 1] & 0xFF)
+                                        if idx + 1 < len(byte_values)
+                                        else 0
+                                    )
+                                    packed_words.append((high << 8) | low)
+
+                                for word in packed_words:
+                                    self.emit(f"\t#d16 {word}")
+
+                                for _ in range(size - len(packed_words)):
+                                    self.emit("\t#d16 0")
+
+                            else:
+                                if len(global_var.value.values) > size:
+                                    self.error(
+                                        f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared size '{size}'",
+                                        global_var,
+                                    )
+                                    raise SystemExit(1)
+
+                                for val in global_var.value.values:
+                                    if not isinstance(val, Number):
+                                        self.error(
+                                            f"Global array values for '{global_var.name}' must be constant numbers",
+                                            global_var,
+                                        )
+                                        raise SystemExit(1)
+                                    self.emit(f"\t#d16 {val.value}")
+
+                                for _ in range(size - len(global_var.value.values)):
+                                    self.emit("\t#d16 0")
 
                         elif isinstance(global_var.value, StringValue):
                             try:
@@ -2292,18 +2728,44 @@ class CodeGenerator:
                             except Exception:
                                 parsed_str = global_var.value.value.strip('"')
 
-                            if len(parsed_str) > size:
-                                self.error(
-                                    f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared array size '{size}'",
-                                    global_var,
-                                )
-                                raise SystemExit(1)
+                            if global_var.type.base_type == IntType.U8:
+                                chars = [ord(c) for c in parsed_str] + [0]
+                                if len(chars) > size * 2:
+                                    self.error(
+                                        f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared capacity '{size * 2}'",
+                                        global_var,
+                                    )
+                                    raise SystemExit(1)
 
-                            for char in parsed_str:
-                                self.emit(f"\t#d16 {ord(char)} ; {repr(char)}")
+                                packed_words = []
+                                for idx in range(0, len(chars), 2):
+                                    low = chars[idx] & 0xFF
+                                    high = (
+                                        (chars[idx + 1] & 0xFF)
+                                        if idx + 1 < len(chars)
+                                        else 0
+                                    )
+                                    packed_words.append((high << 8) | low)
 
-                            for _ in range(size - len(parsed_str)):
-                                self.emit("\t#d16 0")
+                                for word in packed_words:
+                                    self.emit(f"\t#d16 {word}")
+
+                                for _ in range(size - len(packed_words)):
+                                    self.emit("\t#d16 0")
+
+                            else:
+                                if len(parsed_str) > size:
+                                    self.error(
+                                        f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared array size '{size}'",
+                                        global_var,
+                                    )
+                                    raise SystemExit(1)
+
+                                for char in parsed_str:
+                                    self.emit(f"\t#d16 {ord(char)} ; {repr(char)}")
+
+                                for _ in range(size - len(parsed_str)):
+                                    self.emit("\t#d16 0")
 
                         else:
                             self.error(
