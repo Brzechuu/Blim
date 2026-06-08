@@ -1322,7 +1322,7 @@ class CodeGenerator:
 
         self.emit(f"_fun__{package}__{function.name}:")
         self.emit("\tpush g3")
-        self.emit("\tmov sp, g3")
+        self.emit("\tmov sp g3")
 
         function_scope: dict[str, Symbol] = {}
         function_scope.update(self.package_globals.get(package, {}))
