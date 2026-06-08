@@ -562,14 +562,14 @@ class CodeGenerator:
         base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
         off_reg = self.alloc_temp_register((RegisterType.B,), avoid=avoid | {base_reg})
 
-        self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+        self.emit(f"\tmov g3 {self.allocator.reg_name(base_reg)}")
         if offset == 0:
-            self.emit(f"\tmov r0, {self.allocator.reg_name(off_reg)}")
+            self.emit(f"\tmov r0 {self.allocator.reg_name(off_reg)}")
         else:
-            self.emit(f"\tmov {offset}, {self.allocator.reg_name(off_reg)}")
+            self.emit(f"\tmov {offset} {self.allocator.reg_name(off_reg)}")
 
         self.emit(
-            f"\tadd {self.allocator.reg_name(base_reg)}, {self.allocator.reg_name(off_reg)}, {self.allocator.reg_name(base_reg)}"
+            f"\tadd {self.allocator.reg_name(base_reg)} {self.allocator.reg_name(off_reg)} {self.allocator.reg_name(base_reg)}"
         )
         self.allocator.reg_free(off_reg)
         return base_reg
@@ -585,15 +585,15 @@ class CodeGenerator:
         base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
         off_reg = self.alloc_temp_register((RegisterType.B,), avoid=avoid | {base_reg})
 
-        self.emit(f"\tmov g3, {self.allocator.reg_name(base_reg)}")
+        self.emit(f"\tmov g3 {self.allocator.reg_name(base_reg)}")
         if offset == 0:
-            self.emit(f"\tmov r0, {self.allocator.reg_name(off_reg)}")
+            self.emit(f"\tmov r0 {self.allocator.reg_name(off_reg)}")
         else:
-            self.emit(f"\tmov {offset}, {self.allocator.reg_name(off_reg)}")
+            self.emit(f"\tmov {offset} {self.allocator.reg_name(off_reg)}")
 
         self.emit(
-            f"\tadd {self.allocator.reg_name(base_reg)}, "
-            f"{self.allocator.reg_name(off_reg)}, "
+            f"\tadd {self.allocator.reg_name(base_reg)} "
+            f"{self.allocator.reg_name(off_reg)} "
             f"{self.allocator.reg_name(base_reg)}"
         )
         self.allocator.reg_free(off_reg)
@@ -607,16 +607,16 @@ class CodeGenerator:
         tmp_a = self.allocator.reg_alloc(RegisterType.A)
         tmp_b = self.allocator.reg_alloc(RegisterType.B)
 
-        self.emit(f"\tmov sp, {self.allocator.reg_name(tmp_a)}")
-        self.emit(f"\tmov {abs(delta)}, {self.allocator.reg_name(tmp_b)}")
+        self.emit(f"\tmov sp {self.allocator.reg_name(tmp_a)}")
+        self.emit(f"\tmov {abs(delta)} {self.allocator.reg_name(tmp_b)}")
 
         if delta > 0:
             self.emit(
-                f"\tadd {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                f"\tadd {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} sp"
             )
         else:
             self.emit(
-                f"\tsub {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, sp"
+                f"\tsub {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} sp"
             )
 
         self.allocator.reg_free(tmp_a)
@@ -1012,9 +1012,9 @@ class CodeGenerator:
 
                 if is_u8_memory:
                     reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
-                    self.emit(f"\tmov {symbol.label}, {self.allocator.reg_name(reg)}")
+                    self.emit(f"\tmov {symbol.label} {self.allocator.reg_name(reg)}")
                     self.emit(
-                        f"\tsll {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                     )
                     return MemAddress(register=reg)
                 return MemAddress(label=symbol.label)
@@ -1022,7 +1022,7 @@ class CodeGenerator:
                 reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
                 if is_u8_memory:
                     self.emit(
-                        f"\tsll {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                     )
                 return MemAddress(register=reg)
 
@@ -1059,7 +1059,7 @@ class CodeGenerator:
 
             if element_size == 1:
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                    f"\tmov {self.allocator.reg_name(index_reg)} {self.allocator.reg_name(offset_reg)}"
                 )
             else:
                 tmp_reg = self.alloc_temp_register(
@@ -1070,46 +1070,46 @@ class CodeGenerator:
                 first_bit = bits[0]
                 if first_bit == 0:
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                        f"\tmov {self.allocator.reg_name(index_reg)} {self.allocator.reg_name(offset_reg)}"
                     )
                 else:
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(offset_reg)}"
+                        f"\tmov {self.allocator.reg_name(index_reg)} {self.allocator.reg_name(offset_reg)}"
                     )
                     if first_bit >= 8:
                         self.emit(
-                            f"\tsll8 {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                            f"\tsll8 {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(offset_reg)}"
                         )
                         for _ in range(first_bit - 8):
                             self.emit(
-                                f"\tsll {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                                f"\tsll {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(offset_reg)}"
                             )
                     else:
                         for _ in range(first_bit):
                             self.emit(
-                                f"\tsll {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(offset_reg)}"
+                                f"\tsll {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(offset_reg)}"
                             )
 
                 for bit in bits[1:]:
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(index_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                        f"\tmov {self.allocator.reg_name(index_reg)} {self.allocator.reg_name(tmp_reg)}"
                     )
                     if bit >= 8:
                         self.emit(
-                            f"\tsll8 {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                            f"\tsll8 {self.allocator.reg_name(tmp_reg)} {self.allocator.reg_name(tmp_reg)}"
                         )
                         for _ in range(bit - 8):
                             self.emit(
-                                f"\tsll {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                                f"\tsll {self.allocator.reg_name(tmp_reg)} {self.allocator.reg_name(tmp_reg)}"
                             )
                     else:
                         for _ in range(bit):
                             self.emit(
-                                f"\tsll {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(tmp_reg)}"
+                                f"\tsll {self.allocator.reg_name(tmp_reg)} {self.allocator.reg_name(tmp_reg)}"
                             )
 
                     self.emit(
-                        f"\tadd {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(offset_reg)}"
+                        f"\tadd {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(tmp_reg)} {self.allocator.reg_name(offset_reg)}"
                     )
 
                 self.allocator.reg_free(tmp_reg)
@@ -1121,10 +1121,10 @@ class CodeGenerator:
                     (RegisterType.A,), avoid=avoid_with_base
                 )
                 self.emit(
-                    f"\tmov {base_addr.label}, {self.allocator.reg_name(target_reg)}"
+                    f"\tmov {base_addr.label} {self.allocator.reg_name(target_reg)}"
                 )
                 self.emit(
-                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+                    f"\tadd {self.allocator.reg_name(target_reg)} {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(target_reg)}"
                 )
                 self.allocator.reg_free(offset_reg)
                 return MemAddress(register=target_reg)
@@ -1136,12 +1136,12 @@ class CodeGenerator:
                         (RegisterType.A,), avoid=avoid_with_base
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(base_addr.register)}, {self.allocator.reg_name(target_reg)}"
+                        f"\tmov {self.allocator.reg_name(base_addr.register)} {self.allocator.reg_name(target_reg)}"
                     )
                     self.allocator.reg_free(base_addr.register)
 
                 self.emit(
-                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+                    f"\tadd {self.allocator.reg_name(target_reg)} {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(target_reg)}"
                 )
                 self.allocator.reg_free(offset_reg)
                 return MemAddress(register=target_reg)
@@ -1224,21 +1224,19 @@ class CodeGenerator:
                         (RegisterType.A,), avoid=avoid_with_base
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(base_addr_reg)}, {self.allocator.reg_name(target_reg)}"
+                        f"\tmov {self.allocator.reg_name(base_addr_reg)} {self.allocator.reg_name(target_reg)}"
                     )
                     self.allocator.reg_free(base_addr_reg)
 
+                self.emit(f"\tmov {field_offset} {self.allocator.reg_name(offset_reg)}")
                 self.emit(
-                    f"\tmov {field_offset}, {self.allocator.reg_name(offset_reg)}"
-                )
-                self.emit(
-                    f"\tadd {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(offset_reg)}, {self.allocator.reg_name(target_reg)}"
+                    f"\tadd {self.allocator.reg_name(target_reg)} {self.allocator.reg_name(offset_reg)} {self.allocator.reg_name(target_reg)}"
                 )
                 self.allocator.reg_free(offset_reg)
 
                 if is_u8_memory:
                     self.emit(
-                        f"\tsll {self.allocator.reg_name(target_reg)}, {self.allocator.reg_name(target_reg)}"
+                        f"\tsll {self.allocator.reg_name(target_reg)} {self.allocator.reg_name(target_reg)}"
                     )
 
                 return MemAddress(register=target_reg)
@@ -1296,7 +1294,7 @@ class CodeGenerator:
                 if self.allocator.reg_state(dst_reg) == RegisterState.FREE:
                     self.allocator.reg_alloc_specific(dst_reg)
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(tmp_reg)}, {self.allocator.reg_name(dst_reg)}"
+                    f"\tmov {self.allocator.reg_name(tmp_reg)} {self.allocator.reg_name(dst_reg)}"
                 )
                 self.allocator.reg_free(tmp_reg)
 
@@ -1392,7 +1390,7 @@ class CodeGenerator:
                 param_symbol.offset, avoid={src_reg}
             )
             self.emit(
-                f"\tstore {self.allocator.reg_name(src_reg)}, [{self.allocator.reg_name(addr_reg)}]"
+                f"\tstore {self.allocator.reg_name(src_reg)} [{self.allocator.reg_name(addr_reg)}]"
             )
             self.allocator.reg_free(addr_reg)
 
@@ -1411,12 +1409,12 @@ class CodeGenerator:
                 result_symbol.offset, avoid={dst_reg}
             )
             self.emit(
-                f"\tload [{self.allocator.reg_name(addr_reg)}], {self.allocator.reg_name(dst_reg)}"
+                f"\tload [{self.allocator.reg_name(addr_reg)}] {self.allocator.reg_name(dst_reg)}"
             )
             self.allocator.reg_free(addr_reg)
 
         self.scopes.pop()
-        self.emit("\tmov g3, sp")
+        self.emit("\tmov g3 sp")
         self.emit("\tpop g3")
         self.emit("\tret")
         self.emit()
@@ -1476,13 +1474,11 @@ class CodeGenerator:
             result_reg = RESULT_REGISTERS[i]
             addr = self.gen_address(target_expr, avoid=live_result_regs)
             if addr.label is not None:
-                self.emit(
-                    f"\tstore {self.allocator.reg_name(result_reg)}, {addr.label}"
-                )
+                self.emit(f"\tstore {self.allocator.reg_name(result_reg)} {addr.label}")
             else:
                 assert addr.register is not None
                 self.emit(
-                    f"\tstore {self.allocator.reg_name(result_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                    f"\tstore {self.allocator.reg_name(result_reg)} [{self.allocator.reg_name(addr.register)}]"
                 )
                 self.allocator.reg_free(addr.register)
 
@@ -1551,28 +1547,28 @@ class CodeGenerator:
                             (RegisterType.A,), avoid={value_reg}
                         )
                         self.emit(
-                            f"\tmov {addr.label}, {self.allocator.reg_name(tmp_addr)}"
+                            f"\tmov {addr.label} {self.allocator.reg_name(tmp_addr)}"
                         )
                         self.emit(
-                            f"\tsrl {self.allocator.reg_name(tmp_addr)}, {self.allocator.reg_name(tmp_addr)}"
+                            f"\tsrl {self.allocator.reg_name(tmp_addr)} {self.allocator.reg_name(tmp_addr)}"
                         )
 
                         tmp_mask = self.alloc_temp_register(
                             (RegisterType.A,), avoid={value_reg, tmp_addr}
                         )
-                        self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_mask)}")
+                        self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_mask)}")
                         self.emit(
-                            f"\tand {self.allocator.reg_name(tmp_mask)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(value_reg)}"
+                            f"\tand {self.allocator.reg_name(tmp_mask)} {self.allocator.reg_name(value_reg)} {self.allocator.reg_name(value_reg)}"
                         )
                         self.allocator.reg_free(tmp_mask)
 
                         self.emit(
-                            f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(tmp_addr)}]"
+                            f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(tmp_addr)}]"
                         )
                         self.allocator.reg_free(tmp_addr)
                     else:
                         self.emit(
-                            f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
+                            f"\tstore {self.allocator.reg_name(value_reg)} {addr.label}"
                         )
                 else:
                     assert addr.register is not None
@@ -1581,20 +1577,20 @@ class CodeGenerator:
                         and symbol.type.pointer_depth == 0
                     ):
                         self.emit(
-                            f"\tsrl {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(addr.register)}"
+                            f"\tsrl {self.allocator.reg_name(addr.register)} {self.allocator.reg_name(addr.register)}"
                         )
 
                         tmp_mask = self.alloc_temp_register(
                             (RegisterType.A,), avoid={value_reg, addr.register}
                         )
-                        self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_mask)}")
+                        self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_mask)}")
                         self.emit(
-                            f"\tand {self.allocator.reg_name(tmp_mask)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(value_reg)}"
+                            f"\tand {self.allocator.reg_name(tmp_mask)} {self.allocator.reg_name(value_reg)} {self.allocator.reg_name(value_reg)}"
                         )
                         self.allocator.reg_free(tmp_mask)
 
                     self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                        f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(addr.register)}]"
                     )
                     self.allocator.reg_free(addr.register)
                 self.allocator.reg_free(value_reg)
@@ -1660,27 +1656,27 @@ class CodeGenerator:
                     reg_str = self.allocator.reg_name(val_reg)
 
                     if addr.label is not None:
-                        self.emit(f"\tload {addr.label}, {reg_str}")
+                        self.emit(f"\tload {addr.label} {reg_str}")
                     elif addr.register is not None:
                         self.emit(
-                            f"\tload [{self.allocator.reg_name(addr.register)}], {reg_str}"
+                            f"\tload [{self.allocator.reg_name(addr.register)}] {reg_str}"
                         )
 
                     if statement.value.op == "!":
-                        self.emit(f"\tnot {reg_str}, {reg_str}")
+                        self.emit(f"\tnot {reg_str} {reg_str}")
                     elif statement.value.op == "-":
                         zero_reg = self.allocator.reg_alloc(RegisterType.A)
-                        self.emit(f"\tmov r0, {self.allocator.reg_name(zero_reg)}")
+                        self.emit(f"\tmov r0 {self.allocator.reg_name(zero_reg)}")
                         self.emit(
-                            f"\tsub {self.allocator.reg_name(zero_reg)}, {reg_str}, {reg_str}"
+                            f"\tsub {self.allocator.reg_name(zero_reg)} {reg_str} {reg_str}"
                         )
                         self.allocator.reg_free(zero_reg)
 
                     if addr.label is not None:
-                        self.emit(f"\tstore {reg_str}, {addr.label}")
+                        self.emit(f"\tstore {reg_str} {addr.label}")
                     elif addr.register is not None:
                         self.emit(
-                            f"\tstore {reg_str}, [{self.allocator.reg_name(addr.register)}]"
+                            f"\tstore {reg_str} [{self.allocator.reg_name(addr.register)}]"
                         )
 
                     self.allocator.reg_free(val_reg)
@@ -1698,12 +1694,12 @@ class CodeGenerator:
                 )
                 if addr.label is not None:
                     self.emit(
-                        f"\tmov {addr.label}, {self.allocator.reg_name(byte_addr_reg)}"
+                        f"\tmov {addr.label} {self.allocator.reg_name(byte_addr_reg)}"
                     )
                 else:
                     assert addr.register is not None
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(byte_addr_reg)}"
+                        f"\tmov {self.allocator.reg_name(addr.register)} {self.allocator.reg_name(byte_addr_reg)}"
                     )
                     self.allocator.reg_free(addr.register)
 
@@ -1715,13 +1711,13 @@ class CodeGenerator:
                 )
 
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(word_addr)}"
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)} {self.allocator.reg_name(word_addr)}"
                 )
                 self.emit(
-                    f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                    f"\tsrl {self.allocator.reg_name(word_addr)} {self.allocator.reg_name(word_addr)}"
                 )
                 self.emit(
-                    f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(old_val)}"
+                    f"\tload [{self.allocator.reg_name(word_addr)}] {self.allocator.reg_name(old_val)}"
                 )
 
                 id_lbl = self.statement_id()
@@ -1731,23 +1727,23 @@ class CodeGenerator:
                     avoid={value_reg, byte_addr_reg, word_addr, old_val},
                 )
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(tmp_a)}"
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)} {self.allocator.reg_name(tmp_a)}"
                 )
 
                 tmp_b = self.alloc_temp_register(
                     (RegisterType.B,),
                     avoid={value_reg, byte_addr_reg, word_addr, old_val, tmp_a},
                 )
-                self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 1 {self.allocator.reg_name(tmp_b)}")
 
                 self.emit(
-                    f"\tand {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_a)}"
+                    f"\tand {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(tmp_a)}"
                 )
-                self.emit(f"\tjmp zr, .store_low_{id_lbl}")
+                self.emit(f"\tjmp zr .store_low_{id_lbl}")
 
-                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_b)}")
                 self.emit(
-                    f"\tand {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(old_val)}"
+                    f"\tand {self.allocator.reg_name(old_val)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(old_val)}"
                 )
 
                 val_as_a = value_reg
@@ -1764,14 +1760,14 @@ class CodeGenerator:
                         },
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(val_as_a)}"
+                        f"\tmov {self.allocator.reg_name(value_reg)} {self.allocator.reg_name(val_as_a)}"
                     )
 
                 self.emit(
-                    f"\tand {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(val_as_a)}"
+                    f"\tand {self.allocator.reg_name(val_as_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(val_as_a)}"
                 )
                 self.emit(
-                    f"\tsll8 {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_a)}"
+                    f"\tsll8 {self.allocator.reg_name(val_as_a)} {self.allocator.reg_name(val_as_a)}"
                 )
 
                 val_as_b = val_as_a
@@ -1789,11 +1785,11 @@ class CodeGenerator:
                         },
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_b)}"
+                        f"\tmov {self.allocator.reg_name(val_as_a)} {self.allocator.reg_name(val_as_b)}"
                     )
 
                 self.emit(
-                    f"\tor {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(val_as_b)}, {self.allocator.reg_name(old_val)}"
+                    f"\tor {self.allocator.reg_name(old_val)} {self.allocator.reg_name(val_as_b)} {self.allocator.reg_name(old_val)}"
                 )
 
                 if val_as_a != value_reg:
@@ -1804,9 +1800,9 @@ class CodeGenerator:
                 self.emit(f"\tjmp .store_done_{id_lbl}")
 
                 self.emit(f".store_low_{id_lbl}:")
-                self.emit(f"\tmov 0xFF00, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 0xFF00 {self.allocator.reg_name(tmp_b)}")
                 self.emit(
-                    f"\tand {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(old_val)}"
+                    f"\tand {self.allocator.reg_name(old_val)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(old_val)}"
                 )
 
                 val_as_a = value_reg
@@ -1823,12 +1819,12 @@ class CodeGenerator:
                         },
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(val_as_a)}"
+                        f"\tmov {self.allocator.reg_name(value_reg)} {self.allocator.reg_name(val_as_a)}"
                     )
 
-                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_b)}")
                 self.emit(
-                    f"\tand {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(val_as_a)}"
+                    f"\tand {self.allocator.reg_name(val_as_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(val_as_a)}"
                 )
 
                 val_as_b = val_as_a
@@ -1846,11 +1842,11 @@ class CodeGenerator:
                         },
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(val_as_a)}, {self.allocator.reg_name(val_as_b)}"
+                        f"\tmov {self.allocator.reg_name(val_as_a)} {self.allocator.reg_name(val_as_b)}"
                     )
 
                 self.emit(
-                    f"\tor {self.allocator.reg_name(old_val)}, {self.allocator.reg_name(val_as_b)}, {self.allocator.reg_name(old_val)}"
+                    f"\tor {self.allocator.reg_name(old_val)} {self.allocator.reg_name(val_as_b)} {self.allocator.reg_name(old_val)}"
                 )
 
                 if val_as_a != value_reg:
@@ -1860,7 +1856,7 @@ class CodeGenerator:
 
                 self.emit(f".store_done_{id_lbl}:")
                 self.emit(
-                    f"\tstore {self.allocator.reg_name(old_val)}, [{self.allocator.reg_name(word_addr)}]"
+                    f"\tstore {self.allocator.reg_name(old_val)} [{self.allocator.reg_name(word_addr)}]"
                 )
 
                 self.allocator.reg_free(tmp_a)
@@ -1872,11 +1868,11 @@ class CodeGenerator:
             else:
                 if addr.label is not None:
                     self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)}, {addr.label}"
+                        f"\tstore {self.allocator.reg_name(value_reg)} {addr.label}"
                     )
                 elif addr.register is not None:
                     self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)}, [{self.allocator.reg_name(addr.register)}]"
+                        f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(addr.register)}]"
                     )
                     self.allocator.reg_free(addr.register)
                 else:
@@ -1968,20 +1964,20 @@ class CodeGenerator:
             left_reg = self.gen_expression(expression.left, RegisterType.B)
             right_reg = self.gen_expression(expression.right, RegisterType.A)
             self.emit(
-                f"\tsub {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(left_reg)}, r0"
+                f"\tsub {self.allocator.reg_name(right_reg)} {self.allocator.reg_name(left_reg)} r0"
             )
         else:
             left_reg = self.gen_expression(expression.left, RegisterType.A)
             right_reg = self.gen_expression(expression.right, RegisterType.B)
             self.emit(
-                f"\tsub {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, r0"
+                f"\tsub {self.allocator.reg_name(left_reg)} {self.allocator.reg_name(right_reg)} r0"
             )
 
         if expression.op == "==":
-            self.emit(f"\tjmp nz, {false_jump_label}")
+            self.emit(f"\tjmp nz {false_jump_label}")
 
         elif expression.op == "!=":
-            self.emit(f"\tjmp zr, {false_jump_label}")
+            self.emit(f"\tjmp zr {false_jump_label}")
 
         else:
             base_type = cmp_type.base_type
@@ -2004,7 +2000,7 @@ class CodeGenerator:
                     ">=": "cr",
                 }
 
-            self.emit(f"\tjmp {false_jumps[expression.op]}, {false_jump_label}")
+            self.emit(f"\tjmp {false_jumps[expression.op]} {false_jump_label}")
 
         self.allocator.reg_free(left_reg)
         self.allocator.reg_free(right_reg)
@@ -2017,9 +2013,9 @@ class CodeGenerator:
         if isinstance(expression, Number):
             reg = self.allocator.reg_alloc(target_register_type)
             if expression.value == 0:
-                self.emit(f"\tmov r0, {self.allocator.reg_name(reg)}")
+                self.emit(f"\tmov r0 {self.allocator.reg_name(reg)}")
             else:
-                self.emit(f"\tmov {expression.value}, {self.allocator.reg_name(reg)}")
+                self.emit(f"\tmov {expression.value} {self.allocator.reg_name(reg)}")
             return reg
 
         elif isinstance(expression, StringValue):
@@ -2039,7 +2035,7 @@ class CodeGenerator:
                 raise SystemExit(1)
 
             char_code = ord(parsed_str[0])
-            self.emit(f"\tmov {char_code}, {self.allocator.reg_name(reg)}")
+            self.emit(f"\tmov {char_code} {self.allocator.reg_name(reg)}")
             return reg
 
         elif isinstance(expression, (Name, MemberAccess, Index)):
@@ -2067,23 +2063,23 @@ class CodeGenerator:
 
                 if addr.label is not None:
                     self.emit(
-                        f"\tmov {addr.label}, {self.allocator.reg_name(byte_addr_reg)}"
+                        f"\tmov {addr.label} {self.allocator.reg_name(byte_addr_reg)}"
                     )
                 else:
                     assert addr.register is not None
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(byte_addr_reg)}"
+                        f"\tmov {self.allocator.reg_name(addr.register)} {self.allocator.reg_name(byte_addr_reg)}"
                     )
                     self.allocator.reg_free(addr.register)
 
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(word_addr)}"
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)} {self.allocator.reg_name(word_addr)}"
                 )
                 self.emit(
-                    f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                    f"\tsrl {self.allocator.reg_name(word_addr)} {self.allocator.reg_name(word_addr)}"
                 )
                 self.emit(
-                    f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(target)}"
+                    f"\tload [{self.allocator.reg_name(word_addr)}] {self.allocator.reg_name(target)}"
                 )
                 self.allocator.reg_free(word_addr)
 
@@ -2092,33 +2088,33 @@ class CodeGenerator:
                     (RegisterType.A,), avoid={target, byte_addr_reg}
                 )
                 self.emit(
-                    f"\tmov {self.allocator.reg_name(byte_addr_reg)}, {self.allocator.reg_name(tmp_a)}"
+                    f"\tmov {self.allocator.reg_name(byte_addr_reg)} {self.allocator.reg_name(tmp_a)}"
                 )
 
                 tmp_b = self.alloc_temp_register(
                     (RegisterType.B,), avoid={target, tmp_a}
                 )
-                self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 1 {self.allocator.reg_name(tmp_b)}")
 
                 self.emit(
-                    f"\tand {self.allocator.reg_name(tmp_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_a)}"
+                    f"\tand {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(tmp_a)}"
                 )
-                self.emit(f"\tjmp zr, .is_low_{id_lbl}")
+                self.emit(f"\tjmp zr .is_low_{id_lbl}")
                 self.emit(
-                    f"\tsrl8 {self.allocator.reg_name(target)}, {self.allocator.reg_name(target)}"
+                    f"\tsrl8 {self.allocator.reg_name(target)} {self.allocator.reg_name(target)}"
                 )
                 self.emit(f".is_low_{id_lbl}:")
 
-                self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_b)}")
                 target_as_a = target
                 if self.allocator.reg_type(target) != RegisterType.A:
                     target_as_a = tmp_a
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(target)}, {self.allocator.reg_name(target_as_a)}"
+                        f"\tmov {self.allocator.reg_name(target)} {self.allocator.reg_name(target_as_a)}"
                     )
 
                 self.emit(
-                    f"\tand {self.allocator.reg_name(target_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(target)}"
+                    f"\tand {self.allocator.reg_name(target_as_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(target)}"
                 )
 
                 self.allocator.reg_free(tmp_a)
@@ -2129,12 +2125,12 @@ class CodeGenerator:
             else:
                 if addr.label is not None:
                     self.emit(
-                        f"\tload [{addr.label}], {self.allocator.reg_name(target)}"
+                        f"\tload [{addr.label}] {self.allocator.reg_name(target)}"
                     )
                 else:
                     assert addr.register is not None
                     self.emit(
-                        f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(target)}"
+                        f"\tload [{self.allocator.reg_name(addr.register)}] {self.allocator.reg_name(target)}"
                     )
                     self.allocator.reg_free(addr.register)
                 return target
@@ -2144,11 +2140,11 @@ class CodeGenerator:
                 addr = self.gen_address(expression.value)
                 target = self.allocator.reg_alloc(target_register_type)
                 if addr.label is not None:
-                    self.emit(f"\tmov {addr.label}, {self.allocator.reg_name(target)}")
+                    self.emit(f"\tmov {addr.label} {self.allocator.reg_name(target)}")
                 elif addr.register is not None:
                     if addr.register != target:
                         self.emit(
-                            f"\tmov {self.allocator.reg_name(addr.register)}, {self.allocator.reg_name(target)}"
+                            f"\tmov {self.allocator.reg_name(addr.register)} {self.allocator.reg_name(target)}"
                         )
                     self.allocator.reg_free(addr.register)
                 else:
@@ -2167,13 +2163,13 @@ class CodeGenerator:
                         (RegisterType.A,), avoid={target, ptr_reg}
                     )
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(ptr_reg)}, {self.allocator.reg_name(word_addr)}"
+                        f"\tmov {self.allocator.reg_name(ptr_reg)} {self.allocator.reg_name(word_addr)}"
                     )
                     self.emit(
-                        f"\tsrl {self.allocator.reg_name(word_addr)}, {self.allocator.reg_name(word_addr)}"
+                        f"\tsrl {self.allocator.reg_name(word_addr)} {self.allocator.reg_name(word_addr)}"
                     )
                     self.emit(
-                        f"\tload [{self.allocator.reg_name(word_addr)}], {self.allocator.reg_name(target)}"
+                        f"\tload [{self.allocator.reg_name(word_addr)}] {self.allocator.reg_name(target)}"
                     )
                     self.allocator.reg_free(word_addr)
 
@@ -2182,7 +2178,7 @@ class CodeGenerator:
                     tmp_b = self.alloc_temp_register(
                         (RegisterType.B,), avoid={target, ptr_reg}
                     )
-                    self.emit(f"\tmov 1, {self.allocator.reg_name(tmp_b)}")
+                    self.emit(f"\tmov 1 {self.allocator.reg_name(tmp_b)}")
 
                     ptr_as_a = ptr_reg
                     if self.allocator.reg_type(ptr_reg) != RegisterType.A:
@@ -2190,7 +2186,7 @@ class CodeGenerator:
                             (RegisterType.A,), avoid={target, ptr_reg, tmp_b}
                         )
                         self.emit(
-                            f"\tmov {self.allocator.reg_name(ptr_reg)}, {self.allocator.reg_name(ptr_as_a)}"
+                            f"\tmov {self.allocator.reg_name(ptr_reg)} {self.allocator.reg_name(ptr_as_a)}"
                         )
 
                     tmp_result = self.alloc_temp_register(
@@ -2198,31 +2194,31 @@ class CodeGenerator:
                     )
 
                     self.emit(
-                        f"\tand {self.allocator.reg_name(ptr_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(tmp_result)}"
+                        f"\tand {self.allocator.reg_name(ptr_as_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(tmp_result)}"
                     )
                     self.allocator.reg_free(tmp_result)
                     if ptr_as_a != ptr_reg:
                         self.allocator.reg_free(ptr_as_a)
 
-                    self.emit(f"\tjmp zr, .is_low_{id_lbl}")
+                    self.emit(f"\tjmp zr .is_low_{id_lbl}")
 
                     self.emit(
-                        f"\tsrl8 {self.allocator.reg_name(target)}, {self.allocator.reg_name(target)}"
+                        f"\tsrl8 {self.allocator.reg_name(target)} {self.allocator.reg_name(target)}"
                     )
                     self.emit(f".is_low_{id_lbl}:")
 
-                    self.emit(f"\tmov 255, {self.allocator.reg_name(tmp_b)}")
+                    self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_b)}")
                     target_as_a = target
                     if self.allocator.reg_type(target) != RegisterType.A:
                         target_as_a = self.alloc_temp_register(
                             (RegisterType.A,), avoid={target, tmp_b}
                         )
                         self.emit(
-                            f"\tmov {self.allocator.reg_name(target)}, {self.allocator.reg_name(target_as_a)}"
+                            f"\tmov {self.allocator.reg_name(target)} {self.allocator.reg_name(target_as_a)}"
                         )
 
                     self.emit(
-                        f"\tand {self.allocator.reg_name(target_as_a)}, {self.allocator.reg_name(tmp_b)}, {self.allocator.reg_name(target)}"
+                        f"\tand {self.allocator.reg_name(target_as_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(target)}"
                     )
 
                     if target_as_a != target:
@@ -2233,7 +2229,7 @@ class CodeGenerator:
                     return target
                 else:
                     self.emit(
-                        f"\tload [{self.allocator.reg_name(ptr_reg)}], {self.allocator.reg_name(target)}"
+                        f"\tload [{self.allocator.reg_name(ptr_reg)}] {self.allocator.reg_name(target)}"
                     )
                     self.allocator.reg_free(ptr_reg)
                     return target
@@ -2253,7 +2249,7 @@ class CodeGenerator:
                     reg = self.gen_expression(expression.value, RegisterType.A)
 
                 self.emit(
-                    f"\tnot {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                    f"\tnot {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                 )
                 return reg
 
@@ -2269,9 +2265,9 @@ class CodeGenerator:
                 value_reg = self.gen_expression(expression.value, RegisterType.B)
                 zero_reg = self.allocator.reg_alloc(RegisterType.A)
 
-                self.emit(f"\tmov r0, {self.allocator.reg_name(zero_reg)}")
+                self.emit(f"\tmov r0 {self.allocator.reg_name(zero_reg)}")
                 self.emit(
-                    f"\tsub {self.allocator.reg_name(zero_reg)}, {self.allocator.reg_name(value_reg)}, {self.allocator.reg_name(zero_reg)}"
+                    f"\tsub {self.allocator.reg_name(zero_reg)} {self.allocator.reg_name(value_reg)} {self.allocator.reg_name(zero_reg)}"
                 )
 
                 self.allocator.reg_free(value_reg)
@@ -2285,12 +2281,10 @@ class CodeGenerator:
                 assert val_reg is not None
 
                 if addr.label is not None:
-                    self.emit(
-                        f"\tload {addr.label}, {self.allocator.reg_name(val_reg)}"
-                    )
+                    self.emit(f"\tload {addr.label} {self.allocator.reg_name(val_reg)}")
                 elif addr.register is not None:
                     self.emit(
-                        f"\tload [{self.allocator.reg_name(addr.register)}], {self.allocator.reg_name(val_reg)}"
+                        f"\tload [{self.allocator.reg_name(addr.register)}] {self.allocator.reg_name(val_reg)}"
                     )
                 else:
                     self.error("Invalid memory address", expression)
@@ -2298,22 +2292,22 @@ class CodeGenerator:
 
                 reg_str = self.allocator.reg_name(val_reg)
                 if expression.op == "++":
-                    self.emit(f"\tinc {reg_str}, {reg_str}")
+                    self.emit(f"\tinc {reg_str} {reg_str}")
                 else:
-                    self.emit(f"\tdec {reg_str}, {reg_str}")
+                    self.emit(f"\tdec {reg_str} {reg_str}")
 
                 if addr.label is not None:
-                    self.emit(f"\tstore {reg_str}, {addr.label}")
+                    self.emit(f"\tstore {reg_str} {addr.label}")
                 else:
                     assert addr.register is not None
                     self.emit(
-                        f"\tstore {reg_str}, [{self.allocator.reg_name(addr.register)}]"
+                        f"\tstore {reg_str} [{self.allocator.reg_name(addr.register)}]"
                     )
 
                 target = self.allocator.reg_alloc(target_register_type)
 
                 if target != val_reg:
-                    self.emit(f"\tmov {reg_str}, {self.allocator.reg_name(target)}")
+                    self.emit(f"\tmov {reg_str} {self.allocator.reg_name(target)}")
 
                 self.allocator.reg_free(val_reg)
                 if addr.register is not None:
@@ -2369,7 +2363,7 @@ class CodeGenerator:
                     to_free = [left_reg, right_reg]
 
                 self.emit(
-                    f"\t{basic_ops[expression.op]} {self.allocator.reg_name(left_reg)}, {self.allocator.reg_name(right_reg)}, {self.allocator.reg_name(target)}"
+                    f"\t{basic_ops[expression.op]} {self.allocator.reg_name(left_reg)} {self.allocator.reg_name(right_reg)} {self.allocator.reg_name(target)}"
                 )
                 for reg in to_free:
                     if reg != target:
@@ -2403,33 +2397,33 @@ class CodeGenerator:
                 if expression.op == "<<<" or expression.op == ">>>":
                     for _ in range(1, expression.right.value):
                         self.emit(
-                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                         )
                     self.emit(
-                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(target)}"
                     )
                 elif expression.right.value == 8:
                     self.emit(
-                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)} {self.allocator.reg_name(target)}"
                     )
                 elif expression.right.value > 8:
                     self.emit(
-                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                        f"\t{shifts[expression.op]}8 {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                     )
                     for _ in range(1, expression.right.value - 8):
                         self.emit(
-                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                         )
                     self.emit(
-                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(target)}"
                     )
                 else:
                     for _ in range(1, expression.right.value):
                         self.emit(
-                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(reg)}"
+                            f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                         )
                     self.emit(
-                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)}, {self.allocator.reg_name(target)}"
+                        f"\t{shifts[expression.op]} {self.allocator.reg_name(reg)} {self.allocator.reg_name(target)}"
                     )
                 if target != reg:
                     self.allocator.reg_free(reg)
@@ -2463,7 +2457,7 @@ class CodeGenerator:
                 abi_result_reg = RESULT_REGISTERS[0]
                 if result_target != abi_result_reg:
                     self.emit(
-                        f"\tmov {self.allocator.reg_name(abi_result_reg)}, {self.allocator.reg_name(result_target)}"
+                        f"\tmov {self.allocator.reg_name(abi_result_reg)} {self.allocator.reg_name(result_target)}"
                     )
 
             self.restore_registers_after_call(spilled)
