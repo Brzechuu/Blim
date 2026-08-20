@@ -32,6 +32,7 @@ main: fun() {
 
 print: fun(x: u16) {
     asm {
-        out a0, r0
+        out a0 o0
+        stf o0
     }
 }
