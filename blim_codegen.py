@@ -70,6 +70,7 @@ class RegisterType(Enum):
 class MemAddress:
     register: Register | None = None
     label: str | None = None
+    rel_offset: int | None = None
 
 
 class SymbolRange(Enum):
@@ -553,27 +554,6 @@ class CodeGenerator:
         for reg in reversed(spilled):
             self.pop_register(reg)
 
-    def make_stack_address(
-        self, offset: int, avoid: set[Register] | None = None
-    ) -> Register:
-        if avoid is None:
-            avoid = set()
-
-        base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
-        off_reg = self.alloc_temp_register((RegisterType.B,), avoid=avoid | {base_reg})
-
-        self.emit(f"\tmov g3 {self.allocator.reg_name(base_reg)}")
-        if offset == 0:
-            self.emit(f"\tmov r0 {self.allocator.reg_name(off_reg)}")
-        else:
-            self.emit(f"\tmov {offset} {self.allocator.reg_name(off_reg)}")
-
-        self.emit(
-            f"\tadd {self.allocator.reg_name(base_reg)} {self.allocator.reg_name(off_reg)} {self.allocator.reg_name(base_reg)}"
-        )
-        self.allocator.reg_free(off_reg)
-        return base_reg
-
     def make_stack_address_flexible(
         self,
         offset: int,
@@ -626,6 +606,18 @@ class CodeGenerator:
         leak_size = target_offset - self.current_stack_offset
         if leak_size > 0:
             self.adjust_sp(leak_size)
+
+    def addr_expr(self, addr: MemAddress) -> str:
+        if addr.label is not None:
+            return f"[{addr.label}]"
+        assert addr.register is not None
+        if addr.rel_offset is not None and addr.rel_offset != 0:
+            return f"[{self.allocator.reg_name(addr.register)} + {addr.rel_offset}]"
+        return f"[{self.allocator.reg_name(addr.register)}]"
+
+    def free_addr(self, addr: MemAddress):
+        if addr.register is not None and addr.rel_offset is None:
+            self.allocator.reg_free(addr.register)
 
     def resolve_type_size(
         self, var_type: Type, current_package: str, current_file_ast
@@ -1019,15 +1011,22 @@ class CodeGenerator:
                     return MemAddress(register=reg)
                 return MemAddress(label=symbol.label)
             else:
-                reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
                 if is_u8_memory:
+                    reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
                     self.emit(
                         f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                     )
-                return MemAddress(register=reg)
+                    return MemAddress(register=reg)
+                return MemAddress(register=Register.G3, rel_offset=symbol.offset)
 
         elif isinstance(expression, Index):
             base_addr = self.gen_address(expression.value, avoid=avoid)
+
+            if base_addr.rel_offset is not None:
+                base_reg = self.make_stack_address_flexible(
+                    base_addr.rel_offset, avoid=avoid
+                )
+                base_addr = MemAddress(register=base_reg)
 
             base_type = self.get_expression_type(expression.value)
             element_type = Type(
@@ -1199,6 +1198,20 @@ class CodeGenerator:
 
                 if field_offset == 0:
                     return base_addr
+
+                if base_addr.rel_offset is not None and base_addr.register == Register.G3:
+                    if is_u8_memory:
+                        reg = self.make_stack_address_flexible(
+                            base_addr.rel_offset + field_offset, avoid=avoid
+                        )
+                        self.emit(
+                            f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
+                        )
+                        return MemAddress(register=reg)
+                    return MemAddress(
+                        register=Register.G3,
+                        rel_offset=base_addr.rel_offset + field_offset,
+                    )
 
                 if base_addr.label is not None:
                     return MemAddress(label=f"({base_addr.label} + {field_offset})")
@@ -1377,7 +1390,7 @@ class CodeGenerator:
             self.allocator.reg_alloc_specific(ARGUMENT_REGISTERS[i])
             self.allocator.reg_lock(ARGUMENT_REGISTERS[i])
 
-        self.adjust_sp(-frame_size)
+        self.adjust_sp(-frame_size - 1)
 
         for i in range(len(function.params)):
             self.allocator.reg_unlock(ARGUMENT_REGISTERS[i])
@@ -1385,14 +1398,9 @@ class CodeGenerator:
         for i, param in enumerate(function.params):
             src_reg = ARGUMENT_REGISTERS[i]
             param_symbol = function_scope[param.name]
-
-            addr_reg = self.make_stack_address_flexible(
-                param_symbol.offset, avoid={src_reg}
-            )
             self.emit(
-                f"\tstore {self.allocator.reg_name(src_reg)} [{self.allocator.reg_name(addr_reg)}]"
+                f"\tstore {self.allocator.reg_name(src_reg)} [g3 + {param_symbol.offset}]"
             )
-            self.allocator.reg_free(addr_reg)
 
         self.gen_statement(function.body)
 
@@ -1404,14 +1412,9 @@ class CodeGenerator:
                 self.allocator.reg_alloc_specific(dst_reg)
 
             result_symbol = function_scope[result.name]
-
-            addr_reg = self.make_stack_address_flexible(
-                result_symbol.offset, avoid={dst_reg}
-            )
             self.emit(
-                f"\tload [{self.allocator.reg_name(addr_reg)}] {self.allocator.reg_name(dst_reg)}"
+                f"\tload [g3 + {result_symbol.offset}] {self.allocator.reg_name(dst_reg)}"
             )
-            self.allocator.reg_free(addr_reg)
 
         self.scopes.pop()
         self.emit("\tmov g3 sp")
@@ -1473,14 +1476,10 @@ class CodeGenerator:
         for i, target_expr in enumerate(targets):
             result_reg = RESULT_REGISTERS[i]
             addr = self.gen_address(target_expr, avoid=live_result_regs)
-            if addr.label is not None:
-                self.emit(f"\tstore {self.allocator.reg_name(result_reg)} {addr.label}")
-            else:
-                assert addr.register is not None
-                self.emit(
-                    f"\tstore {self.allocator.reg_name(result_reg)} [{self.allocator.reg_name(addr.register)}]"
-                )
-                self.allocator.reg_free(addr.register)
+            self.emit(
+                f"\tstore {self.allocator.reg_name(result_reg)} {self.addr_expr(addr)}"
+            )
+            self.free_addr(addr)
 
         self.restore_registers_after_call(spilled)
         self.restore_allocator_state(saved_reg_states, saved_locked_regs)
@@ -1538,11 +1537,11 @@ class CodeGenerator:
 
                 value_reg = self.gen_expression(statement.value, RegisterType.B)
                 addr = self.gen_address(Name(0, 0, statement.name), avoid={value_reg})
-                if addr.label is not None:
-                    if (
-                        symbol.type.base_type == IntType.U8
-                        and symbol.type.pointer_depth == 0
-                    ):
+                if (
+                    symbol.type.base_type == IntType.U8
+                    and symbol.type.pointer_depth == 0
+                ):
+                    if addr.label is not None:
                         tmp_addr = self.alloc_temp_register(
                             (RegisterType.A,), avoid={value_reg}
                         )
@@ -1567,15 +1566,7 @@ class CodeGenerator:
                         )
                         self.allocator.reg_free(tmp_addr)
                     else:
-                        self.emit(
-                            f"\tstore {self.allocator.reg_name(value_reg)} {addr.label}"
-                        )
-                else:
-                    assert addr.register is not None
-                    if (
-                        symbol.type.base_type == IntType.U8
-                        and symbol.type.pointer_depth == 0
-                    ):
+                        assert addr.register is not None and addr.rel_offset is None
                         self.emit(
                             f"\tsrl {self.allocator.reg_name(addr.register)} {self.allocator.reg_name(addr.register)}"
                         )
@@ -1589,10 +1580,15 @@ class CodeGenerator:
                         )
                         self.allocator.reg_free(tmp_mask)
 
+                        self.emit(
+                            f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(addr.register)}]"
+                        )
+                        self.allocator.reg_free(addr.register)
+                else:
                     self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(addr.register)}]"
+                        f"\tstore {self.allocator.reg_name(value_reg)} {self.addr_expr(addr)}"
                     )
-                    self.allocator.reg_free(addr.register)
+                    self.free_addr(addr)
                 self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Assign):
@@ -1655,12 +1651,9 @@ class CodeGenerator:
                     val_reg = self.allocator.reg_alloc(RegisterType.B)
                     reg_str = self.allocator.reg_name(val_reg)
 
-                    if addr.label is not None:
-                        self.emit(f"\tload {addr.label} {reg_str}")
-                    elif addr.register is not None:
-                        self.emit(
-                            f"\tload [{self.allocator.reg_name(addr.register)}] {reg_str}"
-                        )
+                    self.emit(
+                        f"\tload {self.addr_expr(addr)} {self.allocator.reg_name(val_reg)}"
+                    )
 
                     if statement.value.op == "!":
                         self.emit(f"\tnot {reg_str} {reg_str}")
@@ -1672,16 +1665,10 @@ class CodeGenerator:
                         )
                         self.allocator.reg_free(zero_reg)
 
-                    if addr.label is not None:
-                        self.emit(f"\tstore {reg_str} {addr.label}")
-                    elif addr.register is not None:
-                        self.emit(
-                            f"\tstore {reg_str} [{self.allocator.reg_name(addr.register)}]"
-                        )
+                    self.emit(f"\tstore {reg_str} {self.addr_expr(addr)}")
 
                     self.allocator.reg_free(val_reg)
-                    if addr.register is not None:
-                        self.allocator.reg_free(addr.register)
+                    self.free_addr(addr)
 
                     return
 
@@ -1866,18 +1853,13 @@ class CodeGenerator:
                 self.allocator.reg_free(old_val)
                 self.allocator.reg_free(value_reg)
             else:
-                if addr.label is not None:
-                    self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)} {addr.label}"
-                    )
-                elif addr.register is not None:
-                    self.emit(
-                        f"\tstore {self.allocator.reg_name(value_reg)} [{self.allocator.reg_name(addr.register)}]"
-                    )
-                    self.allocator.reg_free(addr.register)
-                else:
+                if addr.label is None and addr.register is None:
                     self.error("Invalid memory address", statement)
                     raise SystemExit(1)
+                self.emit(
+                    f"\tstore {self.allocator.reg_name(value_reg)} {self.addr_expr(addr)}"
+                )
+                self.free_addr(addr)
                 self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
@@ -2123,16 +2105,13 @@ class CodeGenerator:
                 return target
 
             else:
-                if addr.label is not None:
-                    self.emit(
-                        f"\tload [{addr.label}] {self.allocator.reg_name(target)}"
-                    )
-                else:
-                    assert addr.register is not None
-                    self.emit(
-                        f"\tload [{self.allocator.reg_name(addr.register)}] {self.allocator.reg_name(target)}"
-                    )
-                    self.allocator.reg_free(addr.register)
+                if addr.label is None and addr.register is None:
+                    self.error("Invalid memory address", expression)
+                    raise SystemExit(1)
+                self.emit(
+                    f"\tload {self.addr_expr(addr)} {self.allocator.reg_name(target)}"
+                )
+                self.free_addr(addr)
                 return target
 
         elif isinstance(expression, Operation1):
@@ -2141,6 +2120,29 @@ class CodeGenerator:
                 target = self.allocator.reg_alloc(target_register_type)
                 if addr.label is not None:
                     self.emit(f"\tmov {addr.label} {self.allocator.reg_name(target)}")
+                elif addr.rel_offset is not None:
+                    if addr.rel_offset == 0:
+                        self.emit(f"\tmov g3 {self.allocator.reg_name(target)}")
+                    else:
+                        base = self.alloc_temp_register(
+                            (RegisterType.A,), avoid={target}
+                        )
+                        off = self.alloc_temp_register(
+                            (RegisterType.B,), avoid={target, base}
+                        )
+                        self.emit(f"\tmov g3 {self.allocator.reg_name(base)}")
+                        self.emit(
+                            f"\tmov {addr.rel_offset} {self.allocator.reg_name(off)}"
+                        )
+                        self.emit(
+                            f"\tadd {self.allocator.reg_name(base)} {self.allocator.reg_name(off)} {self.allocator.reg_name(base)}"
+                        )
+                        self.allocator.reg_free(off)
+                        if base != target:
+                            self.emit(
+                                f"\tmov {self.allocator.reg_name(base)} {self.allocator.reg_name(target)}"
+                            )
+                        self.allocator.reg_free(base)
                 elif addr.register is not None:
                     if addr.register != target:
                         self.emit(
@@ -2280,15 +2282,12 @@ class CodeGenerator:
 
                 assert val_reg is not None
 
-                if addr.label is not None:
-                    self.emit(f"\tload {addr.label} {self.allocator.reg_name(val_reg)}")
-                elif addr.register is not None:
-                    self.emit(
-                        f"\tload [{self.allocator.reg_name(addr.register)}] {self.allocator.reg_name(val_reg)}"
-                    )
-                else:
+                if addr.label is None and addr.register is None:
                     self.error("Invalid memory address", expression)
                     raise SystemExit(1)
+                self.emit(
+                    f"\tload {self.addr_expr(addr)} {self.allocator.reg_name(val_reg)}"
+                )
 
                 reg_str = self.allocator.reg_name(val_reg)
                 if expression.op == "++":
@@ -2296,13 +2295,7 @@ class CodeGenerator:
                 else:
                     self.emit(f"\tdec {reg_str} {reg_str}")
 
-                if addr.label is not None:
-                    self.emit(f"\tstore {reg_str} {addr.label}")
-                else:
-                    assert addr.register is not None
-                    self.emit(
-                        f"\tstore {reg_str} [{self.allocator.reg_name(addr.register)}]"
-                    )
+                self.emit(f"\tstore {reg_str} {self.addr_expr(addr)}")
 
                 target = self.allocator.reg_alloc(target_register_type)
 
@@ -2310,8 +2303,7 @@ class CodeGenerator:
                     self.emit(f"\tmov {reg_str} {self.allocator.reg_name(target)}")
 
                 self.allocator.reg_free(val_reg)
-                if addr.register is not None:
-                    self.allocator.reg_free(addr.register)
+                self.free_addr(addr)
 
                 return target
 
