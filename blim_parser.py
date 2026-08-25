@@ -199,6 +199,7 @@ class Function(Node):
     body: Block
     params: list[Param] = field(default_factory=list)
     results: list[Result] = field(default_factory=list)
+    noframe: bool = False
 
 
 @dataclass
@@ -230,6 +231,7 @@ class FileAst(Node):
     functions: list[Function] = field(default_factory=list)
     defines: list[Define] = field(default_factory=list)
     interrupt_vectors: list[InterruptVector] = field(default_factory=list)
+    noframe_funcs: list[str] = field(default_factory=list)
 
 
 class Parser:
@@ -645,6 +647,10 @@ class Parser:
                         )
                     )
 
+                elif directive_name == "nof":
+                    func_name_tok = self.expect(TokenType.IDENTIFIER)
+                    ast.noframe_funcs.append(func_name_tok.value)
+
                 else:
                     self.r.error(
                         f"Unknown directive '#{directive_name}'",
@@ -683,6 +689,10 @@ class Parser:
                     token.column,
                 )
                 self.pos += 1
+
+        for func in ast.functions:
+            if func.name in ast.noframe_funcs:
+                func.noframe = True
 
         return ast
 

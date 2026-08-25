@@ -1333,9 +1333,18 @@ class CodeGenerator:
             self.error(f"Function '{function.name}' has too many results", function)
             raise SystemExit(1)
 
+        if function.noframe and (function.params or function.results):
+            self.error(
+                f"noframe function '{function.name}' does not support parameters or results", # Or maybe it should?
+                function,
+            )
+            raise SystemExit(1)
+
         self.emit(f"_fun__{package}__{function.name}:")
-        self.emit("\tpush g3")
-        self.emit("\tmov sp g3")
+
+        if not function.noframe:
+            self.emit("\tpush g3")
+            self.emit("\tmov sp g3")
 
         function_scope: dict[str, Symbol] = {}
         function_scope.update(self.package_globals.get(package, {}))
@@ -1390,7 +1399,8 @@ class CodeGenerator:
             self.allocator.reg_alloc_specific(ARGUMENT_REGISTERS[i])
             self.allocator.reg_lock(ARGUMENT_REGISTERS[i])
 
-        self.adjust_sp(-frame_size - 1)
+        if not function.noframe:
+            self.adjust_sp(-frame_size - 1)
 
         for i in range(len(function.params)):
             self.allocator.reg_unlock(ARGUMENT_REGISTERS[i])
@@ -1417,8 +1427,9 @@ class CodeGenerator:
             )
 
         self.scopes.pop()
-        self.emit("\tmov g3 sp")
-        self.emit("\tpop g3")
+        if not function.noframe:
+            self.emit("\tmov g3 sp")
+            self.emit("\tpop g3")
         self.emit("\tret")
         self.emit()
 
