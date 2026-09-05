@@ -1,4 +1,4 @@
-package math
+#pkg math
 
 add_i16: fun(a: i16, b: i16) -> result: i16 {
     result = a + b

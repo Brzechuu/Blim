@@ -4,8 +4,6 @@ from enum import Enum, auto
 
 
 class TokenType(Enum):
-    PACKAGE = auto()
-    USE = auto()
     AS = auto()
     ASM = auto()
     STRUCT = auto()
@@ -82,8 +80,6 @@ class Lexer:
         self.code = code
 
         self.keywords = {
-            "package": TokenType.PACKAGE,
-            "use": TokenType.USE,
             "as": TokenType.AS,
             "asm": TokenType.ASM,
             "struct": TokenType.STRUCT,

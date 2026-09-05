@@ -594,7 +594,8 @@ class Parser:
         self.skip_newlines()
         start_token = self.get_token()
 
-        if self.match(TokenType.PACKAGE):
+        if (self.get_token().type == TokenType.HASH_DIRECTIVE and self.get_token().value == "#pkg"):
+            self.pos += 1
             package_name = self.expect(TokenType.IDENTIFIER).value
             self.skip_newlines()
         else:
@@ -614,10 +615,7 @@ class Parser:
 
             token = self.get_token()
 
-            if token.type == TokenType.USE:
-                ast.imports.append(self.parse_use())
-
-            elif token.type == TokenType.HASH_DIRECTIVE:
+            if token.type == TokenType.HASH_DIRECTIVE:
                 self.pos += 1
                 directive_name = token.value[1:]
 
@@ -650,6 +648,17 @@ class Parser:
                 elif directive_name == "nof":
                     func_name_tok = self.expect(TokenType.IDENTIFIER)
                     ast.noframe_funcs.append(func_name_tok.value)
+
+                elif directive_name == "use":
+                    ast.imports.append(self.parse_use(token))
+
+                elif directive_name == "pkg":
+                    self.r.error(
+                        "Directive '#pkg' must be at the beginning of the file",
+                        self.path,
+                        token.line,
+                        token.column,
+                    )
 
                 else:
                     self.r.error(
@@ -696,8 +705,7 @@ class Parser:
 
         return ast
 
-    def parse_use(self) -> Use:
-        line_tok = self.expect(TokenType.USE)
+    def parse_use(self, line_tok: Token) -> Use:
         pkg = self.expect(TokenType.IDENTIFIER).value
         alias = None
         if self.match(TokenType.AS):

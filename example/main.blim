@@ -1,6 +1,5 @@
-package main
-
-use math
+#pkg main
+#use math
 
 #vec main 0
 
