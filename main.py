@@ -28,6 +28,9 @@ def main():
     arg_parser.add_argument(
         "-d", "--debug", action="store_true", help="Enable debug info", dest="debug"
     )
+    arg_parser.add_argument(
+        "-o", "--output", type=str, help="Output file", dest="output"
+    )
     # arg_parser.add_argument("-f", "--format", required=True, help="Format", dest="format")
     args = arg_parser.parse_args()
 
@@ -111,7 +114,13 @@ def main():
     if r.error_counter:
         raise SystemExit(1)
 
-    output_file = project_path / f"{project_path.name}.asm"
+    if args.output:
+        output_file = Path(args.output).resolve()
+        if output_file.is_dir():
+            r.error(f"Output path '{output_file}' is a directory.")
+            raise SystemExit(1)
+    else:
+        output_file = Path.cwd() / f"{project_path.name}.asm"
     try:
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(asm_code)
