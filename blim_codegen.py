@@ -938,7 +938,7 @@ class CodeGenerator:
 
         if isinstance(expression, Index):
             base_type = self.get_expression_type(expression.value)
-            if not self.is_array(base_type):
+            if not (self.is_array(base_type) or self.is_pointer(base_type)):
                 self.error(
                     f"Cannot index non-array type '{self.type_name(base_type)}'",
                     expression.value,
@@ -952,11 +952,16 @@ class CodeGenerator:
                 )
                 raise SystemExit(1)
 
+            if self.is_array(base_type):
+                ptr_depth = base_type.pointer_depth
+            else:
+                ptr_depth = base_type.pointer_depth - 1
+
             return Type(
                 line=expression.line,
                 column=expression.column,
                 base_type=base_type.base_type,
-                pointer_depth=base_type.pointer_depth,
+                pointer_depth=ptr_depth,
                 array_size=None,
             )
 
@@ -1029,6 +1034,29 @@ class CodeGenerator:
                 base_addr = MemAddress(register=base_reg)
 
             base_type = self.get_expression_type(expression.value)
+
+            if self.is_pointer(base_type):
+                avoid_for_ptr = set(avoid)
+                if base_addr.register is not None:
+                    avoid_for_ptr.add(base_addr.register)
+                ptr_reg = self.alloc_temp_register(
+                    (RegisterType.A,), avoid=avoid_for_ptr
+                )
+                if base_addr.label is not None:
+                    self.emit(
+                        f"\tmov {base_addr.label} {self.allocator.reg_name(ptr_reg)}"
+                    )
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(ptr_reg)}] {self.allocator.reg_name(ptr_reg)}"
+                    )
+                else:
+                    assert base_addr.register is not None
+                    self.emit(
+                        f"\tload [{self.allocator.reg_name(base_addr.register)}] {self.allocator.reg_name(ptr_reg)}"
+                    )
+                    self.allocator.reg_free(base_addr.register)
+                base_addr = MemAddress(register=ptr_reg)
+
             element_type = Type(
                 line=expression.line,
                 column=expression.column,
