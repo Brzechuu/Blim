@@ -41,6 +41,7 @@ class Type(Node):
     base_type: IntType | str
     pointer_depth: int = 0
     array_size: Expression | None = None
+    array_inferred: bool = False
 
 
 @dataclass
@@ -549,7 +550,7 @@ class Parser:
 
         return ExprStatement(line=token.line, column=token.column, value=expr)
 
-    def parse_type(self) -> Type:
+    def parse_type(self, allow_inferred: bool = False) -> Type:
         token = self.get_token()
         pointer_depth = 0
         while self.match(TokenType.STAR):
@@ -578,9 +579,22 @@ class Parser:
             raise SystemExit(1)
 
         array_size = None
+        array_inferred = False
         if self.match(TokenType.LEFT_SQUARE_BRACKET):
-            array_size = self.parse_expression()
-            self.expect(TokenType.RIGHT_SQUARE_BRACKET)
+            if self.get_token().type == TokenType.RIGHT_SQUARE_BRACKET:
+                self.pos += 1
+                if not allow_inferred:
+                    self.r.error(
+                        "Array size must be specified",
+                        self.path,
+                        token.line,
+                        token.column,
+                    )
+                    raise SystemExit(1)
+                array_inferred = True
+            else:
+                array_size = self.parse_expression()
+                self.expect(TokenType.RIGHT_SQUARE_BRACKET)
 
         return Type(
             line=token.line,
@@ -588,6 +602,7 @@ class Parser:
             base_type=base_type,
             pointer_depth=pointer_depth,
             array_size=array_size,
+            array_inferred=array_inferred,
         )
 
     def parse(self) -> FileAst:
@@ -739,11 +754,51 @@ class Parser:
         )
 
     def parse_global_var(self, name_token: Token) -> GlobalVariable:
-        g_type = self.parse_type()
+        g_type = self.parse_type(allow_inferred=True)
 
         initial_value = None
         if self.match(TokenType.ASSIGN):
             initial_value = self.parse_expression()
+
+        if g_type.array_inferred:
+            if initial_value is None:
+                self.r.error(
+                    f"Array '{name_token.value}' without explicit size requires an initializer",
+                    self.path,
+                    name_token.line,
+                    name_token.column,
+                )
+                raise SystemExit(1)
+
+            size = None
+            if isinstance(initial_value, ArrayValue):
+                size = len(initial_value.values)
+            elif isinstance(initial_value, StringValue):
+                import ast
+
+                try:
+                    parsed_str = ast.literal_eval(initial_value.value)
+                except Exception:
+                    parsed_str = initial_value.value.strip('"')
+                size = len(parsed_str)
+                if g_type.base_type == IntType.U8:
+                    size += 1
+
+            if size is None:
+                self.r.error(
+                    "Cannot infer array size from this initializer; expected an array or string literal",
+                    self.path,
+                    initial_value.line,
+                    initial_value.column,
+                )
+                raise SystemExit(1)
+
+            g_type.array_size = Number(
+                line=name_token.line,
+                column=name_token.column,
+                value=size,
+            )
+            g_type.array_inferred = False
 
         return GlobalVariable(
             line=name_token.line,
