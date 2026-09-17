@@ -5,6 +5,7 @@ from pathlib import Path
 from blim_codegen import CodeGenerator
 from blim_lexer import Lexer, TokenType
 from blim_parser import FileAst, Parser
+from blim_preprocessor import Preprocessor
 from blim_reporter import Reporter
 from blim_semanalyzer import SemanticAnalyzer
 
@@ -86,6 +87,8 @@ def main():
 
     if r.error_counter:
         raise SystemExit(1)
+
+    Preprocessor(ast, r).preprocess()
 
     if args.debug:
         for package, files_ast in ast.items():
