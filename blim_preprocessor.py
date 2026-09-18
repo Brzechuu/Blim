@@ -27,12 +27,14 @@ class Preprocessor:
     def __init__(self, project_ast: dict[str, list[FileAst]], reporter: Reporter):
         self.project_ast = project_ast
         self.r = reporter
+        self.all_defines: dict[str, dict[str, int]] = {}
+        self.package_aliases: dict[str, str] = {}
 
     def preprocess(self) -> None:
-        defines = self.build_defines_map()
+        self.all_defines = self.build_defines_map()
 
         for package, files_ast in self.project_ast.items():
-            package_defines = defines.get(package, {})
+            package_defines = self.all_defines.get(package, {})
             for file_ast in files_ast:
                 self.process_file(file_ast, package_defines)
 
@@ -47,6 +49,13 @@ class Preprocessor:
         return result
 
     def process_file(self, file_ast: FileAst, defines: dict[str, int]) -> None:
+        self.package_aliases = {}
+        for use in file_ast.imports:
+            if use.alias:
+                self.package_aliases[use.alias] = use.package
+            else:
+                self.package_aliases[use.package] = use.package
+
         for struct in file_ast.structures:
             for field in struct.fields:
                 self.process_type(field.type, defines)
@@ -159,8 +168,23 @@ class Preprocessor:
             return expression
 
         if isinstance(expression, MemberAccess):
-            if expression.type != MemberAccessType.PACKAGE:
-                expression.value = self.fold_expression(expression.value, defines)
+            if isinstance(expression.value, Name):
+                prefix = expression.value.value
+                is_package = (
+                    expression.type == MemberAccessType.PACKAGE
+                    or prefix in self.package_aliases
+                )
+                if is_package:
+                    target_package = self.package_aliases.get(prefix, prefix)
+                    package_defines = self.all_defines.get(target_package, {})
+                    if expression.member in package_defines:
+                        return Number(
+                            line=expression.line,
+                            column=expression.column,
+                            value=package_defines[expression.member],
+                        )
+                    return expression
+            expression.value = self.fold_expression(expression.value, defines)
             return expression
 
         if isinstance(expression, Index):
