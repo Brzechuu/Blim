@@ -515,6 +515,20 @@ class CodeGenerator:
             )
             return  # Scary!
 
+        if self.is_pointer(target_type) and self.is_integer(value_type):
+            self.warn(
+                f"Implicit pointer conversion in {context}: '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
+                value_expr,
+            )
+            return
+
+        if self.is_integer(target_type) and self.is_pointer(value_type):
+            self.warn(
+                f"Implicit pointer conversion in {context}: '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
+                value_expr,
+            )
+            return
+
         self.error(
             f"Type mismatch in {context}: cannot assign '{self.type_name(value_type)}' to '{self.type_name(target_type)}'",
             value_expr,
