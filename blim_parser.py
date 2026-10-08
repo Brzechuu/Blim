@@ -197,10 +197,12 @@ class Result(Node):
 @dataclass
 class Function(Node):
     name: str
-    body: Block
+    body: Block | None
     params: list[Param] = field(default_factory=list)
     results: list[Result] = field(default_factory=list)
     noframe: bool = False
+    external: bool = False
+    vector: int = -1
 
 
 @dataclass
@@ -223,6 +225,11 @@ class InterruptVector(Node):
 
 
 @dataclass
+class EntryPoint(Node):
+    func_name: str
+
+
+@dataclass
 class FileAst(Node):
     path: Path
     package: str
@@ -232,6 +239,7 @@ class FileAst(Node):
     functions: list[Function] = field(default_factory=list)
     defines: list[Define] = field(default_factory=list)
     interrupt_vectors: list[InterruptVector] = field(default_factory=list)
+    entries: list[EntryPoint] = field(default_factory=list)
     noframe_funcs: list[str] = field(default_factory=list)
 
 
@@ -664,6 +672,37 @@ class Parser:
                     func_name_tok = self.expect(TokenType.IDENTIFIER)
                     ast.noframe_funcs.append(func_name_tok.value)
 
+                elif directive_name == "ext":
+                    vector_tok = self.expect(TokenType.NUMBER)
+                    func_name_tok = self.expect(TokenType.IDENTIFIER)
+                    self.expect(TokenType.COLON)
+                    self.expect(TokenType.FUN)
+                    params, results = self.parse_signature()
+
+                    ast.functions.append(
+                        Function(
+                            line=token.line,
+                            column=token.column,
+                            name=func_name_tok.value,
+                            body=None,
+                            params=params,
+                            results=results,
+                            external=True,
+                            vector=int(vector_tok.value, 0),
+                        )
+                    )
+
+                elif directive_name == "ent":
+                    func_name_tok = self.expect(TokenType.IDENTIFIER)
+
+                    ast.entries.append(
+                        EntryPoint(
+                            line=token.line,
+                            column=token.column,
+                            func_name=func_name_tok.value,
+                        )
+                    )
+
                 elif directive_name == "use":
                     ast.imports.append(self.parse_use(token))
 
@@ -808,7 +847,7 @@ class Parser:
             value=initial_value,
         )
 
-    def parse_function(self, name_token: Token) -> Function:
+    def parse_signature(self) -> tuple[list[Param], list[Result]]:
         self.expect(TokenType.LEFT_BRACKET)
         params = []
 
@@ -850,6 +889,11 @@ class Parser:
 
                 if not self.match(TokenType.COMMA):
                     break
+
+        return params, results
+
+    def parse_function(self, name_token: Token) -> Function:
+        params, results = self.parse_signature()
 
         self.skip_newlines()
         body = self.parse_block()

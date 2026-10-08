@@ -74,6 +74,7 @@ class Token:
     def __str__(self):
         return f"[{self.line}:{self.column}] {self.type.name}: {self.value}"
 
+token: Token
 
 class Lexer:
     def __init__(self, code: str):

@@ -157,6 +157,13 @@ class SemanticAnalyzer:
                     )
                 else:
                     func = env.functions[vec.func_name]
+                    if func.external:
+                        self.r.error(
+                            f"Interrupt vector '{vec.vector_number}' cannot point to external function '{vec.func_name}'",
+                            file_ast.path,
+                            vec.line,
+                            vec.column,
+                        )
                     if len(func.params) > 0 and vec.vector_number < 16:
                         self.r.error(
                             f"Interrupt handler function '{vec.func_name}' cannot take parameters",
@@ -170,6 +177,31 @@ class SemanticAnalyzer:
                             file_ast.path,
                             vec.line,
                             vec.column,
+                        )
+
+            for entry in file_ast.entries:
+                if entry.func_name not in env.functions:
+                    self.r.error(
+                        f"Entry point '{entry.func_name}' is undefined in package '{package_name}'",
+                        file_ast.path,
+                        entry.line,
+                        entry.column,
+                    )
+                else:
+                    func = env.functions[entry.func_name]
+                    if func.external:
+                        self.r.error(
+                            f"Entry point '{entry.func_name}' cannot be an external function",
+                            file_ast.path,
+                            entry.line,
+                            entry.column,
+                        )
+                    if len(func.params) > 0 or len(func.results) > 0:
+                        self.r.error(
+                            f"Entry point '{entry.func_name}' cannot take parameters or return results",
+                            file_ast.path,
+                            entry.line,
+                            entry.column,
                         )
 
             for struct in file_ast.structures:
@@ -192,6 +224,15 @@ class SemanticAnalyzer:
             scopes: list[dict[str, object]] = [dict(env.variables)]
 
             for function in file_ast.functions:
+                if function.external:
+                    if function.vector < 16:
+                        self.r.error(
+                            f"External function '{function.name}' must use vector 16 or higher, got {function.vector}",
+                            file_ast.path,
+                            function.line,
+                            function.column,
+                        )
+                    continue
                 self.analyze_function(function, scopes, env, packages, file_ast)
 
     def analyze_function(
@@ -262,6 +303,9 @@ class SemanticAnalyzer:
 
         elif isinstance(statement, Assign):
             for target in statement.targets:
+                if isinstance(target, Name) and target.value == "_":
+                    continue
+
                 if isinstance(target, Name) and target.value in env.defines:
                     self.r.error(
                         f"Cannot assign to define '{target.value}'",
@@ -485,6 +529,19 @@ class SemanticAnalyzer:
                             vec.column,
                         )
                     global_vectors.add(vec.vector_number)
+
+        global_entry = None
+        for files_ast in self.project_ast.values():
+            for file_ast in files_ast:
+                for entry in file_ast.entries:
+                    if global_entry is not None:
+                        self.r.error(
+                            f"Duplicate entry point. Already defined as '{global_entry}'",
+                            file_ast.path,
+                            entry.line,
+                            entry.column,
+                        )
+                    global_entry = entry.func_name
 
         for package_name, files_ast in self.project_ast.items():
             self.check_duplication(package_name, files_ast)

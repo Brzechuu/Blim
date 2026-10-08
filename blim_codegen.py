@@ -71,6 +71,7 @@ class MemAddress:
     register: Register | None = None
     label: str | None = None
     rel_offset: int | None = None
+    pc_offset: str | None = None
 
 
 class SymbolRange(Enum):
@@ -219,8 +220,20 @@ class RegisterAllocator:
 
 
 class CodeGenerator:
-    def __init__(self, project_ast: dict[str, list[FileAst]], reporter: Reporter):
+    def __init__(
+        self,
+        project_ast: dict[str, list[FileAst]],
+        reporter: Reporter,
+        output_format: str = "raw",
+    ):
+        if output_format not in ("raw", "mef"):
+            reporter.error(f"Unknown output format '{output_format}'")
+            raise SystemExit(1)
+
         self.project_ast = project_ast
+        self.output_format = output_format
+        self.relative_jumps = (output_format == "mef")
+        self.base_relative = (output_format == "mef")
         self.lines: list[str] = []
         self.r = reporter
         self.allocator = RegisterAllocator(reporter)
@@ -258,6 +271,17 @@ class CodeGenerator:
 
     def emit(self, text: str = ""):
         self.lines.append(text)
+
+    def emit_jump(self, target: str, flag: str | None = None):
+        opcode = "jpr" if self.relative_jumps else "jmp"
+        if flag is not None:
+            self.emit(f"\t{opcode} {flag} {target}")
+        else:
+            self.emit(f"\t{opcode} {target}")
+
+    def emit_call_label(self, label: str):
+        opcode = "callr" if self.relative_jumps else "call"
+        self.emit(f"\t{opcode} {label}")
 
     def statement_id(self) -> int:
         self.id_counter += 1
@@ -622,12 +646,38 @@ class CodeGenerator:
             self.adjust_sp(leak_size)
 
     def addr_expr(self, addr: MemAddress) -> str:
+        if addr.pc_offset is not None:
+            return f"[pc + ({addr.pc_offset} - $)]"
         if addr.label is not None:
             return f"[{addr.label}]"
         assert addr.register is not None
         if addr.rel_offset is not None and addr.rel_offset != 0:
             return f"[{self.allocator.reg_name(addr.register)} + {addr.rel_offset}]"
         return f"[{self.allocator.reg_name(addr.register)}]"
+
+    def ensure_materialized(
+        self, addr: MemAddress, avoid: set[Register] | None = None
+    ) -> MemAddress:
+        if addr.pc_offset is None:
+            return addr
+
+        base_reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
+        offset_reg = self.alloc_temp_register(
+            (RegisterType.B,), avoid=(avoid or set()) | {base_reg}
+        )
+        label = f".pcbase_{self.statement_id()}"
+        self.emit(f"{label}:")
+        self.emit(f"\tmov pc {self.allocator.reg_name(base_reg)}")
+        self.emit(
+            f"\tmov ({addr.pc_offset} - {label}) {self.allocator.reg_name(offset_reg)}"
+        )
+        self.emit(
+            f"\tadd {self.allocator.reg_name(base_reg)} "
+            f"{self.allocator.reg_name(offset_reg)} "
+            f"{self.allocator.reg_name(base_reg)}"
+        )
+        self.allocator.reg_free(offset_reg)
+        return MemAddress(register=base_reg)
 
     def free_addr(self, addr: MemAddress):
         if addr.register is not None and addr.rel_offset is None:
@@ -1000,6 +1050,11 @@ class CodeGenerator:
         self.error("Unsupported expression for type resolution", expression)
         raise SystemExit(1)
 
+    def global_address(self, label: str, avoid: set[Register] | None = None) -> MemAddress:
+        if not self.base_relative:
+            return MemAddress(label=label)
+        return MemAddress(pc_offset=label)
+
     def gen_address(
         self, expression: Expression, avoid: set[Register] | None = None
     ) -> MemAddress:
@@ -1022,13 +1077,19 @@ class CodeGenerator:
                     raise SystemExit(1)
 
                 if is_u8_memory:
+                    if self.base_relative:
+                        addr = self.ensure_materialized(self.global_address(symbol.label, avoid=avoid), avoid)
+                        reg = addr.register
+                        self.emit(f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}")
+                        return MemAddress(register=reg)
+
                     reg = self.alloc_temp_register((RegisterType.A,), avoid=avoid)
                     self.emit(f"\tmov {symbol.label} {self.allocator.reg_name(reg)}")
                     self.emit(
                         f"\tsll {self.allocator.reg_name(reg)} {self.allocator.reg_name(reg)}"
                     )
                     return MemAddress(register=reg)
-                return MemAddress(label=symbol.label)
+                return self.global_address(symbol.label, avoid=avoid)
             else:
                 if is_u8_memory:
                     reg = self.make_stack_address_flexible(symbol.offset, avoid=avoid)
@@ -1040,6 +1101,7 @@ class CodeGenerator:
 
         elif isinstance(expression, Index):
             base_addr = self.gen_address(expression.value, avoid=avoid)
+            base_addr = self.ensure_materialized(base_addr, avoid)
 
             if base_addr.rel_offset is not None:
                 base_reg = self.make_stack_address_flexible(
@@ -1220,7 +1282,7 @@ class CodeGenerator:
                         f"Global symbol '{symbol.name}' has no label", expression
                     )
                     raise SystemExit(1)
-                return MemAddress(label=symbol.label)
+                return self.global_address(symbol.label, avoid=avoid)
 
             elif expression.type == MemberAccessType.FIELD:
                 base_addr = self.gen_address(expression.value, avoid=avoid)
@@ -1254,6 +1316,9 @@ class CodeGenerator:
                         register=Register.G3,
                         rel_offset=base_addr.rel_offset + field_offset,
                     )
+
+                if base_addr.pc_offset is not None:
+                    return MemAddress(pc_offset=f"({base_addr.pc_offset} + {field_offset})")
 
                 if base_addr.label is not None:
                     return MemAddress(label=f"({base_addr.label} + {field_offset})")
@@ -1355,11 +1420,16 @@ class CodeGenerator:
 
             self.allocator.reg_lock(dst_reg)
 
-        self.emit(f"\tcall _fun__{target_package}__{function.name}")
+        if function.external:
+            self.emit(f"\tload [{function.vector}] g0")
+            self.emit("\tcall [g0]")
+        else:
+            self.emit_call_label(f"_fun__{target_package}__{function.name}")
 
         return saved_reg_states, saved_locked_regs, spilled
 
     def gen_function(self, package: str, file_ast, function: Function):
+        self.current_function_name = function.name
         self.id_counter = 0
         self.scopes.clear()
         self.current_stack_offset = 0
@@ -1477,6 +1547,9 @@ class CodeGenerator:
 
         self.allocator.reg_unlock_and_reset_states()
 
+    def is_discard_target(self, expression: Expression) -> bool:
+        return isinstance(expression, Name) and expression.value == "_"
+
     def gen_multi_result_assign(
         self,
         targets: list[Expression],
@@ -1503,6 +1576,9 @@ class CodeGenerator:
             raise SystemExit(1)
 
         for i, target_expr in enumerate(targets):
+            if self.is_discard_target(target_expr):
+                continue
+
             if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
                 isinstance(target_expr, Operation1) and target_expr.op == "*"
             ):
@@ -1527,6 +1603,9 @@ class CodeGenerator:
         live_result_regs: set[Register] = set(RESULT_REGISTERS[: len(function.results)])
 
         for i, target_expr in enumerate(targets):
+            if self.is_discard_target(target_expr):
+                continue
+
             result_reg = RESULT_REGISTERS[i]
             addr = self.gen_address(target_expr, avoid=live_result_regs)
             self.emit(
@@ -1659,6 +1738,12 @@ class CodeGenerator:
                 return
 
             target_expr = statement.targets[0]
+
+            if self.is_discard_target(target_expr):
+                result_reg = self.gen_expression(statement.value)
+                self.allocator.reg_free(result_reg)
+                return
+
             if not isinstance(target_expr, (Name, MemberAccess, Index)) and not (
                 isinstance(target_expr, Operation1) and target_expr.op == "*"
             ):
@@ -1779,7 +1864,7 @@ class CodeGenerator:
                 self.emit(
                     f"\tand {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(tmp_a)}"
                 )
-                self.emit(f"\tjmp zr .store_low_{id_lbl}")
+                self.emit_jump(f".store_low_{id_lbl}", "zr")
 
                 self.emit(f"\tmov 255 {self.allocator.reg_name(tmp_b)}")
                 self.emit(
@@ -1837,7 +1922,7 @@ class CodeGenerator:
                 if val_as_b != val_as_a and val_as_b != value_reg:
                     self.allocator.reg_free(val_as_b)
 
-                self.emit(f"\tjmp .store_done_{id_lbl}")
+                self.emit_jump(f".store_done_{id_lbl}")
 
                 self.emit(f".store_low_{id_lbl}:")
                 self.emit(f"\tmov 0xFF00 {self.allocator.reg_name(tmp_b)}")
@@ -1906,7 +1991,7 @@ class CodeGenerator:
                 self.allocator.reg_free(old_val)
                 self.allocator.reg_free(value_reg)
             else:
-                if addr.label is None and addr.register is None:
+                if addr.label is None and addr.register is None and addr.pc_offset is None:
                     self.error("Invalid memory address", statement)
                     raise SystemExit(1)
                 self.emit(
@@ -1916,7 +2001,7 @@ class CodeGenerator:
                 self.allocator.reg_free(value_reg)
 
         elif isinstance(statement, Return):
-            self.emit("\tjmp .return")
+            self.emit_jump(".return")
 
         elif isinstance(statement, If):
             id = self.statement_id()
@@ -1926,7 +2011,7 @@ class CodeGenerator:
                     statement.condition, false_jump_label=f".if_else_{id}"
                 )
                 self.gen_statement(statement.then_block)
-                self.emit(f"\tjmp .if_end_{id}")
+                self.emit_jump(f".if_end_{id}")
                 self.emit(f" .if_else_{id}:")
                 self.gen_statement(statement.else_block)
                 self.emit(f" .if_end_{id}:")
@@ -1943,7 +2028,7 @@ class CodeGenerator:
             self.emit(f" .while_start_{id}:")
             self.gen_condition(statement.condition, false_jump_label=f".while_end_{id}")
             self.gen_statement(statement.body)
-            self.emit(f"\tjmp .while_start_{id}")
+            self.emit_jump(f".while_start_{id}")
             self.emit(f" .while_end_{id}:")
 
             self.loop_stack.pop()
@@ -1954,7 +2039,7 @@ class CodeGenerator:
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
             self.unwind_stack_to(loop_start_offset)
-            self.emit(f"\tjmp .while_end_{id}")
+            self.emit_jump(f".while_end_{id}")
 
         elif isinstance(statement, Continue):
             if not self.loop_stack:
@@ -1962,7 +2047,7 @@ class CodeGenerator:
                 raise SystemExit(1)
             id, loop_start_offset = self.loop_stack[-1]
             self.unwind_stack_to(loop_start_offset)
-            self.emit(f"\tjmp .while_start_{id}")
+            self.emit_jump(f".while_start_{id}")
 
         elif isinstance(statement, ExprStatement):
             result_reg = self.gen_expression(statement.value)
@@ -2009,10 +2094,10 @@ class CodeGenerator:
             )
 
         if expression.op == "==":
-            self.emit(f"\tjmp nz {false_jump_label}")
+            self.emit_jump(false_jump_label, "nz")
 
         elif expression.op == "!=":
-            self.emit(f"\tjmp zr {false_jump_label}")
+            self.emit_jump(false_jump_label, "zr")
 
         else:
             base_type = cmp_type.base_type
@@ -2035,7 +2120,7 @@ class CodeGenerator:
                     ">=": "cr",
                 }
 
-            self.emit(f"\tjmp {false_jumps[expression.op]} {false_jump_label}")
+            self.emit_jump(false_jump_label, false_jumps[expression.op])
 
         self.allocator.reg_free(left_reg)
         self.allocator.reg_free(right_reg)
@@ -2091,6 +2176,7 @@ class CodeGenerator:
             target = self.allocator.reg_alloc(target_register_type)
 
             if expr_type.base_type == IntType.U8 and expr_type.pointer_depth == 0:
+                addr = self.ensure_materialized(addr)
                 word_addr = self.alloc_temp_register((RegisterType.A,), avoid={target})
                 byte_addr_reg = self.alloc_temp_register(
                     (RegisterType.B,), avoid={target, word_addr}
@@ -2134,7 +2220,7 @@ class CodeGenerator:
                 self.emit(
                     f"\tand {self.allocator.reg_name(tmp_a)} {self.allocator.reg_name(tmp_b)} {self.allocator.reg_name(tmp_a)}"
                 )
-                self.emit(f"\tjmp zr .is_low_{id_lbl}")
+                self.emit_jump(f".is_low_{id_lbl}", "zr")
                 self.emit(
                     f"\tsrl8 {self.allocator.reg_name(target)} {self.allocator.reg_name(target)}"
                 )
@@ -2158,7 +2244,7 @@ class CodeGenerator:
                 return target
 
             else:
-                if addr.label is None and addr.register is None:
+                if addr.label is None and addr.register is None and addr.pc_offset is None:
                     self.error("Invalid memory address", expression)
                     raise SystemExit(1)
                 self.emit(
@@ -2170,6 +2256,7 @@ class CodeGenerator:
         elif isinstance(expression, Operation1):
             if expression.op == "&":
                 addr = self.gen_address(expression.value)
+                addr = self.ensure_materialized(addr)
                 target = self.allocator.reg_alloc(target_register_type)
                 if addr.label is not None:
                     self.emit(f"\tmov {addr.label} {self.allocator.reg_name(target)}")
@@ -2255,7 +2342,7 @@ class CodeGenerator:
                     if ptr_as_a != ptr_reg:
                         self.allocator.reg_free(ptr_as_a)
 
-                    self.emit(f"\tjmp zr .is_low_{id_lbl}")
+                    self.emit_jump(f".is_low_{id_lbl}", "zr")
 
                     self.emit(
                         f"\tsrl8 {self.allocator.reg_name(target)} {self.allocator.reg_name(target)}"
@@ -2335,7 +2422,7 @@ class CodeGenerator:
 
                 assert val_reg is not None
 
-                if addr.label is None and addr.register is None:
+                if addr.label is None and addr.register is None and addr.pc_offset is None:
                     self.error("Invalid memory address", expression)
                     raise SystemExit(1)
                 self.emit(
@@ -2640,7 +2727,11 @@ class CodeGenerator:
     def generate_asm_code(self) -> str:
         self.emit("; Generated by Blim for MANIAC 1.0")
         self.emit()
+        if self.output_format == "mef":
+            return self.generate_mef()
+        return self.generate_raw()
 
+    def _collect_interrupt_map(self) -> dict[int, str]:
         interrupt_map: dict[int, str] = {}
         for files_ast in self.project_ast.values():
             for file_ast in files_ast:
@@ -2648,28 +2739,21 @@ class CodeGenerator:
                     interrupt_map[vec.vector_number] = (
                         f"_fun__{file_ast.package}__{vec.func_name}"
                     )
+        return interrupt_map
 
-        if 0 not in interrupt_map:
-            self.r.error("Interrupt 0 is unhandled.")
+    def _collect_entry_label(self) -> str:
+        entry_label: str | None = None
+        for files_ast in self.project_ast.values():
+            for file_ast in files_ast:
+                for entry in file_ast.entries:
+                    entry_label = f"_fun__{file_ast.package}__{entry.func_name}"
+        if entry_label is None:
+            self.r.error("No entry point declared")
             raise SystemExit(1)
+        return entry_label
 
-        self.emit("; ------ INTERRUPT VECTOR TABLE ------")
-        for i in range(max(15, max(interrupt_map.keys())) + 1):
-            if i == 16:
-                self.emit("")
-                self.emit("; ------- SYSCALL VECTOR TABLE -------")
-            if i in interrupt_map:
-                self.emit(f"\t#d16 {interrupt_map[i]} ; Vector {i}")
-            else:
-                self.emit(f"\t#d16 unhandled ; Vector {i}")
-        self.emit()
-
-        self.emit("unhandled:")
-        self.emit("\tret")
-        self.emit()
-
+    def _collect_globals(self) -> None:
         self.package_globals = {}
-        self.emit("; -------------- GLOBAL --------------")
         for package, files_ast in self.project_ast.items():
             globals_map: dict[str, Symbol] = {}
             self.package_globals[package] = globals_map
@@ -2693,134 +2777,236 @@ class CodeGenerator:
                         label=label,
                     )
 
-                    self.emit(f"{label}:")
+    def _emit_data(self, include_bss_zeros: bool) -> None:
+        for package, files_ast in self.project_ast.items():
+            for file_ast in files_ast:
+                for global_var in file_ast.global_variables:
+                    if global_var.value is None and not include_bss_zeros:
+                        continue
+
+                    symbol = self.package_globals[package][global_var.name]
+                    self.emit(f"{symbol.label}:")
+                    if global_var.value is None:
+                        for _ in range(symbol.size):
+                            self.emit("\t#d16 0")
+                    else:
+                        self._emit_initializer(global_var, symbol.size)
+
+    def _emit_bss_res(self) -> None:
+        for package, files_ast in self.project_ast.items():
+            for file_ast in files_ast:
+                for global_var in file_ast.global_variables:
                     if global_var.value is not None:
-                        if isinstance(global_var.value, Number):
-                            self.emit(f"\t#d16 {global_var.value.value}")
-                            for _ in range(1, size):
-                                self.emit("\t#d16 0")
+                        continue
+                    symbol = self.package_globals[package][global_var.name]
+                    self.emit(f"{symbol.label}:")
+                    self.emit(f"\t#res {symbol.size}")
 
-                        elif isinstance(global_var.value, ArrayValue):
-                            if global_var.type.base_type == IntType.U8:
-                                if len(global_var.value.values) > size * 2:
-                                    self.error(
-                                        f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared capacity '{size * 2}'",
-                                        global_var,
-                                    )
-                                    raise SystemExit(1)
+    def _emit_initializer(self, global_var, size: int) -> None:
+        if global_var.value is not None:
+            if isinstance(global_var.value, Number):
+                self.emit(f"\t#d16 {global_var.value.value}")
+                for _ in range(1, size):
+                    self.emit("\t#d16 0")
 
-                                byte_values = []
-                                for val in global_var.value.values:
-                                    if not isinstance(val, Number):
-                                        self.error(
-                                            f"Global u8 array '{global_var.name}' requires constant numeric elements",
-                                            val,
-                                        )
-                                        raise SystemExit(1)
-                                    if val.value < 0 or val.value > 255:
-                                        self.error(
-                                            f"Value {val.value} out of range for u8",
-                                            val,
-                                        )
-                                        raise SystemExit(1)
-                                    byte_values.append(val.value)
+            elif isinstance(global_var.value, ArrayValue):
+                if global_var.type.base_type == IntType.U8:
+                    if len(global_var.value.values) > size * 2:
+                        self.error(
+                            f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared capacity '{size * 2}'",
+                            global_var,
+                        )
+                        raise SystemExit(1)
 
-                                packed_words = []
-                                for idx in range(0, len(byte_values), 2):
-                                    low = byte_values[idx] & 0xFF
-                                    high = (
-                                        (byte_values[idx + 1] & 0xFF)
-                                        if idx + 1 < len(byte_values)
-                                        else 0
-                                    )
-                                    packed_words.append((high << 8) | low)
-
-                                for word in packed_words:
-                                    self.emit(f"\t#d16 {word}")
-
-                                for _ in range(size - len(packed_words)):
-                                    self.emit("\t#d16 0")
-
-                            else:
-                                if len(global_var.value.values) > size:
-                                    self.error(
-                                        f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared size '{size}'",
-                                        global_var,
-                                    )
-                                    raise SystemExit(1)
-
-                                for val in global_var.value.values:
-                                    if not isinstance(val, Number):
-                                        self.error(
-                                            f"Global array values for '{global_var.name}' must be constant numbers",
-                                            global_var,
-                                        )
-                                        raise SystemExit(1)
-                                    self.emit(f"\t#d16 {val.value}")
-
-                                for _ in range(size - len(global_var.value.values)):
-                                    self.emit("\t#d16 0")
-
-                        elif isinstance(global_var.value, StringValue):
-                            try:
-                                parsed_str = ast.literal_eval(global_var.value.value)
-                            except Exception:
-                                parsed_str = global_var.value.value.strip('"')
-
-                            if global_var.type.base_type == IntType.U8:
-                                chars = [ord(c) for c in parsed_str] + [0]
-                                if len(chars) > size * 2:
-                                    self.error(
-                                        f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared capacity '{size * 2}'",
-                                        global_var,
-                                    )
-                                    raise SystemExit(1)
-
-                                packed_words = []
-                                for idx in range(0, len(chars), 2):
-                                    low = chars[idx] & 0xFF
-                                    high = (
-                                        (chars[idx + 1] & 0xFF)
-                                        if idx + 1 < len(chars)
-                                        else 0
-                                    )
-                                    packed_words.append((high << 8) | low)
-
-                                for word in packed_words:
-                                    self.emit(f"\t#d16 {word}")
-
-                                for _ in range(size - len(packed_words)):
-                                    self.emit("\t#d16 0")
-
-                            else:
-                                if len(parsed_str) > size:
-                                    self.error(
-                                        f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared array size '{size}'",
-                                        global_var,
-                                    )
-                                    raise SystemExit(1)
-
-                                for char in parsed_str:
-                                    self.emit(f"\t#d16 {ord(char)} ; {repr(char)}")
-
-                                for _ in range(size - len(parsed_str)):
-                                    self.emit("\t#d16 0")
-
-                        else:
+                    byte_values = []
+                    for val in global_var.value.values:
+                        if not isinstance(val, Number):
                             self.error(
-                                f"Global initializer for '{global_var.name}' must be a constant number, array, or string",
+                                f"Global u8 array '{global_var.name}' requires constant numeric elements",
+                                val,
+                            )
+                            raise SystemExit(1)
+                        if val.value < 0 or val.value > 255:
+                            self.error(
+                                f"Value {val.value} out of range for u8",
+                                val,
+                            )
+                            raise SystemExit(1)
+                        byte_values.append(val.value)
+
+                    packed_words = []
+                    for idx in range(0, len(byte_values), 2):
+                        low = byte_values[idx] & 0xFF
+                        high = (
+                            (byte_values[idx + 1] & 0xFF)
+                            if idx + 1 < len(byte_values)
+                            else 0
+                        )
+                        packed_words.append((high << 8) | low)
+
+                    for word in packed_words:
+                        self.emit(f"\t#d16 {word}")
+
+                    for _ in range(size - len(packed_words)):
+                        self.emit("\t#d16 0")
+
+                else:
+                    if len(global_var.value.values) > size:
+                        self.error(
+                            f"Array initializer for '{global_var.name}' has more elements '{len(global_var.value.values)}' than declared size '{size}'",
+                            global_var,
+                        )
+                        raise SystemExit(1)
+
+                    for val in global_var.value.values:
+                        if not isinstance(val, Number):
+                            self.error(
+                                f"Global array values for '{global_var.name}' must be constant numbers",
                                 global_var,
                             )
                             raise SystemExit(1)
-                    else:
-                        for _ in range(size):
-                            self.emit("\t#d16 0")
-        self.emit()
+                        self.emit(f"\t#d16 {val.value}")
 
-        self.emit("; --------------- CODE ---------------")
+                    for _ in range(size - len(global_var.value.values)):
+                        self.emit("\t#d16 0")
+
+            elif isinstance(global_var.value, StringValue):
+                try:
+                    parsed_str = ast.literal_eval(global_var.value.value)
+                except Exception:
+                    parsed_str = global_var.value.value.strip('"')
+
+                if global_var.type.base_type == IntType.U8:
+                    chars = [ord(c) for c in parsed_str] + [0]
+                    if len(chars) > size * 2:
+                        self.error(
+                            f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared capacity '{size * 2}'",
+                            global_var,
+                        )
+                        raise SystemExit(1)
+
+                    packed_words = []
+                    for idx in range(0, len(chars), 2):
+                        low = chars[idx] & 0xFF
+                        high = (
+                            (chars[idx + 1] & 0xFF)
+                            if idx + 1 < len(chars)
+                            else 0
+                        )
+                        packed_words.append((high << 8) | low)
+
+                    for word in packed_words:
+                        self.emit(f"\t#d16 {word}")
+
+                    for _ in range(size - len(packed_words)):
+                        self.emit("\t#d16 0")
+
+                else:
+                    if len(parsed_str) > size:
+                        self.error(
+                            f"String length '{len(parsed_str)}' for '{global_var.name}' exceeds declared array size '{size}'",
+                            global_var,
+                        )
+                        raise SystemExit(1)
+
+                    for char in parsed_str:
+                        self.emit(f"\t#d16 {ord(char)} ; {repr(char)}")
+
+                    for _ in range(size - len(parsed_str)):
+                        self.emit("\t#d16 0")
+
+            else:
+                self.error(
+                    f"Global initializer for '{global_var.name}' must be a constant number, array, or string",
+                    global_var,
+                )
+                raise SystemExit(1)
+        else:
+            for _ in range(size):
+                self.emit("\t#d16 0")
+
+    def _emit_code(self) -> None:
         for files_ast in self.project_ast.values():
             for file_ast in files_ast:
                 for function in file_ast.functions:
+                    if function.external:
+                        continue
                     self.gen_function(file_ast.package, file_ast, function)
+
+    def generate_raw(self) -> str:
+        for files_ast in self.project_ast.values():
+            for file_ast in files_ast:
+                for entry in file_ast.entries:
+                    self.r.error(
+                        "Directive '#ent' is only valid for the 'mef' format",
+                        file=file_ast.path,
+                        line=entry.line,
+                        column=entry.column,
+                    )
+                    raise SystemExit(1)
+
+
+        interrupt_map = self._collect_interrupt_map()
+        if 0 not in interrupt_map:
+            self.r.error("Interrupt 0 is unhandled.")
+            raise SystemExit(1)
+
+        self.emit("; ------ INTERRUPT VECTOR TABLE ------")
+        for i in range(max(15, max(interrupt_map.keys())) + 1):
+            if i == 16:
+                self.emit("")
+                self.emit("; ------- SYSCALL VECTOR TABLE -------")
+            if i in interrupt_map:
+                self.emit(f"\t#d16 {interrupt_map[i]} ; Vector {i}")
+            else:
+                self.emit(f"\t#d16 unhandled ; Vector {i}")
+        self.emit()
+
+        self.emit("unhandled:")
+        self.emit("\tret")
+        self.emit()
+
+        self._collect_globals()
+        self.emit("; -------------- GLOBAL --------------")
+        self._emit_data(include_bss_zeros=True)
+        self.emit()
+
+        self.emit("; --------------- CODE ---------------")
+        self._emit_code()
+
+        return "\n".join(self.lines)
+
+    def generate_mef(self) -> str:
+        for files_ast in self.project_ast.values():
+            for file_ast in files_ast:
+                for vec in file_ast.interrupt_vectors:
+                    self.r.error(
+                        "Directive '#vec' is not valid for the 'mef' format",
+                        file=file_ast.path,
+                        line=vec.line,
+                        column=vec.column,
+                    )
+                    raise SystemExit(1)
+
+        entry_label = self._collect_entry_label()
+        self._collect_globals()
+
+        self.emit("; -------------- HEADER --------------")
+        self.emit("\t#d16 0x4D45 ; 'M', 'E'")
+        self.emit("\t#d16 0x4601 ; 'F', 1")
+        self.emit("\t#d16 code_section")
+        self.emit("\t#d16 data_section")
+        self.emit(f"\t#d16 {entry_label}")
+        self.emit("\t#d16 mem_end")
+        self.emit()
+        self.emit("; --------------- CODE ---------------")
+        self.emit("code_section:")
+        self._emit_code()
+        self.emit("; --------------- DATA ---------------")
+        self.emit("data_section:")
+        self._emit_data(include_bss_zeros=False)
+        self._emit_bss_res()
+        self.emit()
+        self.emit("mem_end:")
 
         return "\n".join(self.lines)

@@ -70,7 +70,8 @@ class Preprocessor:
                 self.process_type(param.type, defines)
             for result in function.results:
                 self.process_type(result.type, defines)
-            self.process_block(function.body, defines)
+            if function.body is not None:
+                self.process_block(function.body, defines)
 
     def process_type(self, var_type: Type, defines: dict[str, int]) -> None:
         if var_type.array_size is not None:

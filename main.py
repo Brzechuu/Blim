@@ -32,7 +32,9 @@ def main():
     arg_parser.add_argument(
         "-o", "--output", type=str, help="Output file", dest="output"
     )
-    # arg_parser.add_argument("-f", "--format", required=True, help="Format", dest="format")
+    arg_parser.add_argument(
+        "-f", "--format", choices=("raw", "mef"), default="raw", help="Output format", dest="format"
+    )
     args = arg_parser.parse_args()
 
     project_path = Path(args.path).resolve()
@@ -112,7 +114,7 @@ def main():
                     for item in file_ast.functions:
                         print(f"    - {item.name}")
 
-    asm_code = CodeGenerator(ast, r).generate_asm_code()
+    asm_code = CodeGenerator(ast, r, output_format=args.format).generate_asm_code()
 
     if r.error_counter:
         raise SystemExit(1)
